@@ -1,0 +1,26 @@
+{
+  "name": "livefeedback",
+  "version": "1.0.0",
+  "description": "A voice-enabled application that allows users to interact with PDF documents through speech. The application transcribes user questions, generates AI responses about the document content, and reads the responses back using text-to-speech.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "setup": "node setup.js",
+    "start": "concurrently \"npm run start:client\" \"npm run start:server\"",
+    "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
+    "start:client": "cd client && npm run build && npm run preview",
+    "start:server": "cd server && npm run start:prod",
+    "dev:client": "cd client && npm run dev",
+    "dev:server": "cd server && npm run start:dev",
+    "build": "concurrently \"npm run build:client\" \"npm run build:server\"",
+    "build:client": "cd client && npm run build",
+    "build:server": "cd server && npm run build",
+    "install:all": "npm install && cd client && npm install && cd ../server && npm install"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
