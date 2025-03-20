@@ -177,4 +177,107 @@ export class VoiceChatService {
       audioResponse
     };
   }
+
+  // Add new method to get page content from prompt-data.json
+  async getPageContent(pageNumber: number): Promise<{ 
+    content: string; 
+    pageTitle: string;
+    pageCount: number;
+  }> {
+    try {
+      // Read the prompt-data.json file
+      const promptDataPath = path.join(process.cwd(), 'public', 'prompt-data.json');
+      const promptDataContent = fs.readFileSync(promptDataPath, 'utf-8');
+      const promptData = JSON.parse(promptDataContent);
+      
+      // Find the page data
+      const pageData = promptData.pages?.find((page: any) => page.page === pageNumber.toString()) || 
+                        promptData.find((page: any) => page.page === pageNumber.toString());
+      
+      if (!pageData) {
+        throw new Error(`Page ${pageNumber} not found in prompt data`);
+      }
+      
+      // Extract all step content for the page
+      let combinedContent = '';
+      const steps = pageData.steps || [];
+      
+      for (const step of steps) {
+        combinedContent += step.content + ' ';
+      }
+      
+      // Get total page count
+      const pageCount = promptData.pages?.length || 
+                        promptData.filter((page: any) => page.page !== undefined).length || 0;
+      
+      return {
+        content: combinedContent.trim(),
+        pageTitle: pageData.pageTitle || `Page ${pageNumber}`,
+        pageCount
+      };
+    } catch (error) {
+      this.logger.error(`Error fetching page content for page ${pageNumber}:`, error);
+      throw error;
+    }
+  }
+
+  // Add method to summarize page content and convert to speech
+  async summarizePageContent(pageNumber: number): Promise<{ 
+    summary: string; 
+    audioResponse: Buffer;
+    pageTitle: string;
+    pageCount: number;
+  }> {
+    try {
+      // Get page content
+      const { content, pageTitle, pageCount } = await this.getPageContent(pageNumber);
+      this.logger.log(`Summarizing content for page ${pageNumber}: ${pageTitle}`);
+      
+      // Generate summary with OpenAI
+      const summary = await this.generatePageSummary(content, pageTitle, pageNumber);
+      
+      // Convert summary to speech
+      const audioResponse = await this.generateSpeechAudio(summary);
+      
+      return {
+        summary,
+        audioResponse,
+        pageTitle,
+        pageCount
+      };
+    } catch (error) {
+      this.logger.error(`Error summarizing page ${pageNumber}:`, error);
+      throw error;
+    }
+  }
+
+  // Generate summary of page content using OpenAI
+  private async generatePageSummary(content: string, pageTitle: string, pageNumber: number): Promise<string> {
+    try {
+      this.logger.log(`Generating summary for "${pageTitle}" (Page ${pageNumber})...`);
+      
+      const aiResponse = await this.openai.chat.completions.create({
+        model: 'gpt-4',
+        messages: [
+          { 
+            role: 'system', 
+            content: `You are an expert guide explaining a PDF document. Summarize the following content from page ${pageNumber} titled "${pageTitle}" in a conversational tone. Speak directly to the user as if you're narrating the PDF for them. Keep your response clear, helpful, and engaging without being overly formal. Limit your response to 3-4 sentences.` 
+          },
+          { role: 'user', content }
+        ],
+        temperature: 0.7,
+        max_tokens: 250,
+      });
+      
+      const summaryText = aiResponse.choices[0]?.message?.content || 
+        `I'm sorry, I couldn't generate a summary for page ${pageNumber}.`;
+      
+      this.logger.log(`Generated summary: "${summaryText.substring(0, 100)}..."`);
+      
+      return summaryText;
+    } catch (error) {
+      this.logger.error('Error generating page summary:', error);
+      throw error;
+    }
+  }
 } 

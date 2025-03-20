@@ -191,4 +191,71 @@ export class VoiceChatGateway implements OnGatewayConnection, OnGatewayDisconnec
       clientState.isProcessing = false;
     }
   }
+
+  // Add new handler for page summarization
+  @SubscribeMessage('summarize-page')
+  async handlePageSummarization(
+    @MessageBody() data: { pageNumber: number },
+    @ConnectedSocket() client: Socket,
+  ): Promise<void> {
+    const clientId = client.id;
+    this.logger.log(`Received page summarization request from ${clientId} for page ${data.pageNumber}`);
+    
+    // Initialize client state if needed
+    if (!this.clientStates.has(clientId)) {
+      this.clientStates.set(clientId, {
+        audioChunks: [],
+        isProcessing: false
+      });
+    }
+    
+    const clientState = this.clientStates.get(clientId);
+    
+    if (!clientState) {
+      this.logger.error(`Client state not found for ${clientId}`);
+      client.emit('error', 'Internal server error: client state not found');
+      return;
+    }
+    
+    // Check if we're already processing to prevent duplicate requests
+    if (clientState.isProcessing) {
+      this.logger.warn(`Already processing request for client ${clientId}`);
+      client.emit('error', 'Already processing a request');
+      return;
+    }
+    
+    // Mark as processing
+    clientState.isProcessing = true;
+    
+    try {
+      // Get summary and audio for the page
+      const result = await this.voiceChatService.summarizePageContent(data.pageNumber);
+      
+      // Send the summary and audio back to the client
+      client.emit('page-summary', {
+        text: result.summary,
+        pageNumber: data.pageNumber,
+        pageTitle: result.pageTitle,
+        pageCount: result.pageCount
+      });
+      
+      // Convert audio buffer to array format that can be sent over socket.io
+      const audioArray = Array.from(new Uint8Array(result.audioResponse));
+      
+      // Emit the audio response
+      client.emit('page-audio-response', {
+        audio: audioArray,
+        pageNumber: data.pageNumber
+      });
+      
+      // Mark as no longer processing
+      clientState.isProcessing = false;
+    } catch (error) {
+      this.logger.error(`Error processing page ${data.pageNumber}:`, error);
+      client.emit('error', `Error summarizing page ${data.pageNumber}: ${error.message || 'Unknown error'}`);
+      
+      // Mark as no longer processing
+      clientState.isProcessing = false;
+    }
+  }
 } 

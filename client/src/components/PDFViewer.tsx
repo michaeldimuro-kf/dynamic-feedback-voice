@@ -3,6 +3,7 @@ import useStore from '../store/useStore';
 import * as pdfjsLib from 'pdfjs-dist';
 // Import the worker directly (Vite will handle this correctly)
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import PDFNarrator from './PDFNarrator';
 
 // Set the worker explicitly from the imported module
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -189,8 +190,17 @@ const PDFViewer = () => {
   const calculateBaseScale = () => {
     if (containerRef.current) {
       const containerWidth = containerRef.current.clientWidth;
-      const newBaseScale = containerWidth / 800; // Assuming 800px is a standard page width
-      setBaseScale(Math.max(1.0, newBaseScale * 0.9)); // 90% of container width with minimum of 1.0
+      const containerHeight = containerRef.current.clientHeight - 100; // Account for UI elements
+      
+      // Use a more conservative scale to ensure PDF fits in viewport
+      const widthScale = containerWidth / 800; // Assuming 800px is a standard page width
+      const heightScale = containerHeight / 1100; // Assuming 1100px is a standard page height
+      
+      // Use the smaller of the two scales to ensure PDF fits in both dimensions
+      const newBaseScale = Math.min(widthScale, heightScale);
+      
+      // Ensure scale is not too small (minimum 0.7) or too large (maximum 1.0)
+      setBaseScale(Math.max(0.7, Math.min(1.0, newBaseScale * 0.9)));
     }
   };
 
@@ -313,113 +323,54 @@ const PDFViewer = () => {
   }, [nextPage, prevPage, zoomIn, zoomOut]);
 
   return (
-    <div className="pdf-viewer">
-      <div className="pdf-toolbar">
-        <h2>Report Viewer</h2>
+    <div className="pdf-viewer" ref={containerRef}>
+      {pdfState.pdfDoc && <PDFNarrator />}
+      
+      <div className="pdf-container">
+        {isLoading && (
+          <div className="loading-overlay">
+            <div className="spinner"></div>
+            <p>Loading PDF...</p>
+          </div>
+        )}
         
-        <input
-          type="file"
-          id="pdf-upload"
-          accept="application/pdf"
-          onChange={handleFileUpload}
-          className="hidden"
-        />
+        {pdfError && (
+          <div className="error-message">
+            <p>{pdfError}</p>
+            <button onClick={loadDefaultPDF}>Try again</button>
+          </div>
+        )}
         
-        <div className="buttons-container">
-          {pdfState.pdfDoc ? (
-            <>
-              <button onClick={prevPage} className="button" title="Previous Page" disabled={pdfState.pageNum <= 1}>
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="15 18 9 12 15 6"></polyline>
-                </svg>
-              </button>
-              
-              <span id="page-info">
-                Page <span id="page-num">{pdfState.pageNum}</span> of <span id="page-count">{pdfState.pageCount}</span>
-              </span>
-              
-              <button onClick={nextPage} className="button" title="Next Page" disabled={pdfState.pageNum >= pdfState.pageCount}>
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="9 18 15 12 9 6"></polyline>
-                </svg>
-              </button>
-              
-              <button onClick={zoomIn} className="button" title="Zoom In">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="11" cy="11" r="8"></circle>
-                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                  <line x1="11" y1="8" x2="11" y2="14"></line>
-                  <line x1="8" y1="11" x2="14" y2="11"></line>
-                </svg>
-              </button>
-              
-              <button onClick={zoomOut} className="button" title="Zoom Out">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="11" cy="11" r="8"></circle>
-                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                  <line x1="8" y1="11" x2="14" y2="11"></line>
-                </svg>
-              </button>
-              
-              <label htmlFor="pdf-upload" className="button" title="Upload Different PDF">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                  <polyline points="17 8 12 3 7 8"></polyline>
-                  <line x1="12" y1="3" x2="12" y2="15"></line>
-                </svg>
-              </label>
-            </>
-          ) : (
-            <label htmlFor="pdf-upload" className="button primary cursor-pointer">
-              Upload PDF
-            </label>
-          )}
-        </div>
+        <canvas ref={canvasRef} className="pdf-canvas"></canvas>
       </div>
       
-      <div className="pdf-container" ref={containerRef}>
-        <div className="pdf-page">
-          {pdfState.pdfDoc ? (
-            <canvas ref={canvasRef} className="pdf-canvas" />
-          ) : (
-            <div className="pdf-placeholder">
-              {isLoading ? (
-                <p>Loading default PDF...</p>
-              ) : (
-                <>
-                  <h1>Korn Ferry Live Feedback</h1>
-                  <p>Loading the default PDF or upload a different one to get started.</p>
-                  <p>Once loaded, you can ask questions about the document using your voice.</p>
-                  <ol>
-                    <li>Press and hold the microphone button or press Space to record</li>
-                    <li>Ask a question about the document</li>
-                    <li>Release to send your question</li>
-                  </ol>
-                </>
-              )}
-            </div>
-          )}
+      {pdfState.pdfDoc && (
+        <div className="page-navigation-bottom">
+          <button 
+            onClick={prevPage} 
+            disabled={pdfState.pageNum <= 1 || isLoading}
+            title="Previous page"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6"></polyline>
+            </svg>
+          </button>
           
-          {isLoading && (
-            <div className="loading-indicator">
-              <p>Loading PDF...</p>
-            </div>
-          )}
+          <span className="page-info">
+            Page {pdfState.pageNum} of {pdfState.pageCount}
+          </span>
           
-          {pdfError && (
-            <div className="error-message">
-              <p>{pdfError}</p>
-              <button 
-                className="error-close" 
-                onClick={() => setPdfError(null)}
-                aria-label="Dismiss error"
-              >
-                ×
-              </button>
-            </div>
-          )}
+          <button 
+            onClick={nextPage} 
+            disabled={pdfState.pageNum >= pdfState.pageCount || isLoading}
+            title="Next page"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6"></polyline>
+            </svg>
+          </button>
         </div>
-      </div>
+      )}
     </div>
   );
 };

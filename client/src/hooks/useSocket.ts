@@ -8,6 +8,28 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const INITIAL_RETRY_DELAY = 1000;
 
+// Define the message event types
+interface Message {
+  id: string;
+  text: string;
+  type: 'user' | 'bot';
+  timestamp: Date;
+}
+
+// Add new interface for page summary
+interface PageSummary {
+  text: string;
+  pageNumber: number;
+  pageTitle: string;
+  pageCount: number;
+}
+
+// Add interface for audio response
+interface PageAudioResponse {
+  audio: number[];
+  pageNumber: number;
+}
+
 /**
  * Primary WebSocket connection manager for the entire application.
  * This hook creates and maintains a single global WebSocket connection
@@ -22,6 +44,12 @@ const useSocket = () => {
   const { addMessage, setIsProcessing, setIsConnected } = useStore();
   const socketRef = useRef<Socket | null>(globalSocket);
   const [socketReady, setSocketReady] = useState<boolean>(globalSocket !== null && globalSocket.connected);
+  
+  // Add state for page narration
+  const [currentPageSummary, setCurrentPageSummary] = useState<PageSummary | null>(null);
+  const [isProcessingPage, setIsProcessingPage] = useState(false);
+  const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
   
   const createSocketConnection = useCallback(() => {
     // If we already have a connected socket, use it
@@ -329,13 +357,143 @@ const useSocket = () => {
     return status;
   }, [socketReady]);
   
+  // Add listeners for page summary events
+  useEffect(() => {
+    if (!socketRef.current) return;
+
+    // Handle page summary
+    const handlePageSummary = (data: PageSummary) => {
+      console.log('Received page summary:', data);
+      setCurrentPageSummary(data);
+      
+      // Add the summary to the chat messages
+      if (addMessage) {
+        addMessage(`Page ${data.pageNumber} - ${data.pageTitle}: ${data.text}`, 'bot');
+      }
+    };
+
+    // Handle page audio response
+    const handlePageAudioResponse = (data: PageAudioResponse) => {
+      console.log(`Received audio for page ${data.pageNumber}, size: ${data.audio.length} bytes`);
+      
+      if (data.audio && data.audio.length > 0) {
+        try {
+          // Convert audio data to playable format
+          const audioBlob = new Blob([new Uint8Array(data.audio)], { type: 'audio/mpeg' });
+          const audioUrl = URL.createObjectURL(audioBlob);
+          
+          // Create audio element
+          const audio = new Audio(audioUrl);
+          
+          // Store the audio element for controlling playback
+          setCurrentAudio(audio);
+          
+          // Set up event listeners
+          audio.onended = () => {
+            console.log('Audio playback ended');
+            setCurrentAudio(null);
+            setIsProcessingPage(false);
+            
+            // Clean up the URL
+            URL.revokeObjectURL(audioUrl);
+            
+            // Emit event when audio ends
+            if (socketRef.current && socketRef.current.connected) {
+              socketRef.current.emit('page-audio-completed', { pageNumber: data.pageNumber });
+            }
+          };
+          
+          // Start playing audio
+          audio.play().catch(err => {
+            console.error('Error playing audio:', err);
+            setIsProcessingPage(false);
+          });
+        } catch (error) {
+          console.error('Error processing audio response:', error);
+          setIsProcessingPage(false);
+        }
+      } else {
+        console.log('Received empty audio data');
+        setIsProcessingPage(false);
+      }
+    };
+
+    // Add event listeners
+    socketRef.current.on('page-summary', handlePageSummary);
+    socketRef.current.on('page-audio-response', handlePageAudioResponse);
+
+    // Cleanup function
+    return () => {
+      socketRef.current?.off('page-summary', handlePageSummary);
+      socketRef.current?.off('page-audio-response', handlePageAudioResponse);
+    };
+  }, [socketRef.current, addMessage]);
+
+  // Add function to request page summarization
+  const requestPageSummary = async (pageNumber: number): Promise<boolean> => {
+    console.log(`Requesting summary for page ${pageNumber}`);
+    
+    if (!socketRef.current || !socketRef.current.connected) {
+      console.log('Socket not connected');
+      return false;
+    }
+    
+    // Set processing state
+    setIsProcessingPage(true);
+    
+    try {
+      // Emit the summarize-page event
+      socketRef.current.emit('summarize-page', { pageNumber });
+      return true;
+    } catch (error) {
+      console.error('Error requesting page summary:', error);
+      setIsProcessingPage(false);
+      return false;
+    }
+  };
+  
+  // Add functions to control audio playback
+  const pauseAudio = () => {
+    if (currentAudio) {
+      currentAudio.pause();
+      setIsPaused(true);
+    }
+  };
+  
+  const resumeAudio = () => {
+    if (currentAudio) {
+      currentAudio.play();
+      setIsPaused(false);
+    }
+  };
+  
+  const stopAudio = () => {
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+      setIsPaused(false);
+      setCurrentAudio(null);
+      setIsProcessingPage(false);
+    }
+  };
+  
   return { 
     socket: socketRef.current, 
     socketReady, 
     sendAudio, 
     sendTextInput, 
     reconnect,
-    getConnectionStatus
+    getConnectionStatus,
+    
+    // Add new properties
+    requestPageSummary,
+    isProcessingPage,
+    currentPageSummary,
+    currentAudio,
+    isPaused,
+    pauseAudio,
+    resumeAudio,
+    stopAudio
   };
 };
 

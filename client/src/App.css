@@ -24,7 +24,7 @@ html, body {
   max-height: 95vh;
   width: 95%;
   max-width: 1500px;
-  overflow-x: hidden;
+  overflow: hidden;
   background-color: #f8f9fa;
   color: #333;
   margin: 0 auto;
@@ -75,7 +75,8 @@ main {
   gap: 1.5rem;
   flex: 1;
   width: 100%;
-  overflow: auto;
+  overflow: hidden;
+  min-height: 0;
 }
 
 @media (max-width: 1024px) {
@@ -114,8 +115,7 @@ main {
   border-radius: 0.5rem;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   overflow: hidden;
-  min-height: 600px;
-  max-height: 75vh;
+  min-height: 0;
 }
 
 .pdf-toolbar {
@@ -140,13 +140,15 @@ main {
 }
 
 .pdf-container {
-  flex: 1;
+  position: relative;
   overflow: auto;
   display: flex;
   justify-content: center;
+  align-items: center;
   background-color: #f1f1f1;
+  flex: 1;
+  min-height: 0;
   padding: 1rem;
-  position: relative;
 }
 
 .pdf-page {
@@ -161,9 +163,8 @@ main {
 .pdf-canvas {
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
   max-width: 100%;
-  max-height: calc(75vh - 120px); /* Account for toolbar and padding */
+  max-height: calc(100% - 20px);
   display: block;
-  margin: 0 auto;
 }
 
 .pdf-placeholder {
@@ -433,4 +434,132 @@ main {
 
 .button.primary.connected:hover {
   background-color: #4338ca;
+}
+
+/* PDF Narrator styles */
+.pdf-narrator {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background-color: #1e1e2e;
+  border-radius: 8px 8px 0 0;
+  padding: 12px;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.narrator-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.narrator-controls button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.narrator-controls button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.narrator-controls button.primary {
+  background-color: #7c3aed;
+  color: white;
+  border: none;
+}
+
+.narrator-controls button.primary:hover {
+  background-color: #6d28d9;
+}
+
+.narrator-controls button.danger {
+  background-color: #dc2626;
+  color: white;
+  border: none;
+}
+
+.narrator-controls button.danger:hover {
+  background-color: #b91c1c;
+}
+
+.narrator-controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.narrator-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #94a3b8;
+}
+
+.loading-indicator {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #7c3aed;
+  border-top: 2px solid transparent;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Bottom page navigation */
+.page-navigation-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 12px;
+  background-color: #1e1e2e;
+  border-radius: 0 0 8px 8px;
+  flex-shrink: 0;
+  width: 100%;
+}
+
+.page-navigation-bottom button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background-color: #2f2f42;
+  color: white;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.page-navigation-bottom button svg {
+  color: white;
+  stroke: white;
+}
+
+.page-navigation-bottom button:hover {
+  background-color: #3f3f57;
+}
+
+.page-navigation-bottom button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.page-navigation-bottom .page-info {
+  font-size: 14px;
+  color: #e2e8f0;
+  font-weight: 500;
 }
