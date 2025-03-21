@@ -7,7 +7,12 @@ import { WebRTCService } from './webrtc.service';
 
 @Module({
   imports: [ConfigModule],
-  providers: [VoiceChatService, VoiceChatGateway, WebRTCGateway, WebRTCService],
-  exports: [VoiceChatService, WebRTCService],
+  providers: [
+    VoiceChatGateway, 
+    VoiceChatService,
+    WebRTCGateway,
+    WebRTCService
+  ],
+  exports: [VoiceChatService, WebRTCService]
 })
 export class VoiceChatModule {} 

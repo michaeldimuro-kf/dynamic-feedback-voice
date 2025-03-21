@@ -1,0 +1,89 @@
+:root {
+  --accent-color: #3b82f6;
+  --accent-hover-color: #2563eb;
+  --error-color: #ef4444;
+  --processing-color: #f59e0b;
+  --background-color: #ffffff;
+  --text-color: #374151;
+}
+
+.audio-recorder-wrapper {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  z-index: 100;
+}
+
+.toggle-recorder-button {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background-color: var(--accent-color);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
+}
+
+.toggle-recorder-button:hover {
+  background-color: var(--accent-hover-color);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 8px rgba(0, 0, 0, 0.15);
+}
+
+.toggle-recorder-button.active {
+  background-color: var(--text-color);
+}
+
+.recorder-controls {
+  background-color: var(--background-color);
+  border-radius: 16px;
+  padding: 16px;
+  margin-bottom: 12px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 200px;
+}
+
+.record-button {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  margin-bottom: 12px;
+  color: white;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.record-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.error-message {
+  color: var(--error-color);
+  font-size: 0.875rem;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.processing-indicator {
+  color: var(--processing-color);
+  font-size: 0.875rem;
+  margin-top: 8px;
+  text-align: center;
+  font-weight: 500;
+} 

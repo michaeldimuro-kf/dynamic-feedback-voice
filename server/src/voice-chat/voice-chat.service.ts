@@ -30,7 +30,84 @@ export class VoiceChatService {
     this.logger.log(`FFmpeg path set to: ${ffmpegInstaller.path}`);
   }
   
-  // Process a buffer for transcription
+  /**
+   * Generate a response to a message using OpenAI's GPT model
+   * @param message The user's message
+   * @param conversationHistory Previous conversation history
+   */
+  async generateTextResponse(message: string, conversationHistory: any[] = []): Promise<string> {
+    try {
+      this.logger.log('Generating response...');
+      
+      // Create messages array
+      const messages = [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        ...conversationHistory,
+        { role: 'user', content: message }
+      ];
+      
+      // Generate response
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: messages,
+        max_tokens: 150,
+      });
+      
+      const responseText = response.choices[0]?.message?.content || '';
+      
+      this.logger.log('Response generated successfully');
+      return responseText;
+    } catch (error) {
+      this.logger.error('Error generating response:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Convert text to speech using OpenAI's TTS model
+   * @param text Text to convert to speech
+   * @param voice Voice to use (default: 'alloy')
+   */
+  async textToSpeech(text: string, voice: string = 'alloy'): Promise<Buffer> {
+    try {
+      this.logger.log(`Converting text to speech using voice: ${voice}...`);
+      
+      // Generate speech
+      const mp3 = await this.openai.audio.speech.create({
+        model: 'tts-1',
+        voice: voice as any,
+        input: text,
+      });
+      
+      // Convert to buffer
+      const buffer = Buffer.from(await mp3.arrayBuffer());
+      
+      this.logger.log('Text-to-speech conversion successful');
+      return buffer;
+    } catch (error) {
+      this.logger.error('Error converting text to speech:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Health check to ensure the service is running
+   */
+  healthCheck() {
+    try {
+      this.logger.debug('Voice Chat service health check');
+      return { status: 'healthy' };
+    } catch (error) {
+      this.logger.error('Health check failed:', error);
+      return { status: 'unhealthy', error: error.message };
+    }
+  }
+  
+  /**
+   * Process a buffer for transcription
+   * @param audioBuffer Audio data as buffer
+   * @param mimeType MIME type of the audio (default: 'audio/webm')
+   */
   async transcribeAudio(audioBuffer: Buffer, mimeType: string = 'audio/webm'): Promise<string> {
     try {
       this.logger.log(`Transcribing audio: ${audioBuffer.length} bytes, mime type: ${mimeType}`);

@@ -54,7 +54,7 @@ const useSocket = () => {
   const createSocketConnection = useCallback(() => {
     // If we already have a connected socket, use it
     if (globalSocket?.connected) {
-      console.log('Using existing connected socket:', globalSocket.id);
+      console.log('[Socket] Using existing connected socket:', globalSocket.id);
       socketRef.current = globalSocket;
       setSocketReady(true);
       setIsConnected(true);
@@ -63,14 +63,16 @@ const useSocket = () => {
     
     // If socket exists but is disconnected, try to reconnect
     if (globalSocket) {
-      console.log('Attempting to reconnect existing socket...');
+      console.log('[Socket] Existing socket found but disconnected, attempting to reconnect...');
       
       if (!globalSocket.connected) {
         try {
+          console.log('[Socket] Calling connect() on existing socket');
           globalSocket.connect();
         } catch (err) {
-          console.error('Error reconnecting socket:', err);
+          console.error('[Socket] Error reconnecting socket:', err);
           // If reconnecting fails, create a new socket
+          console.log('[Socket] Reconnection failed, will create new socket');
           globalSocket = null;
         }
       }
@@ -80,11 +82,11 @@ const useSocket = () => {
     }
     
     // Create a new socket if none exists
-    console.log('Creating new socket connection...');
+    console.log('[Socket] Creating new socket connection...');
     
     // Get server URL from environment or use default
     const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
-    console.log('Connecting to server at:', serverUrl);
+    console.log('[Socket] Connecting to server at:', serverUrl);
     
     try {
       const socket = io(serverUrl, {
@@ -94,50 +96,73 @@ const useSocket = () => {
         reconnectionDelayMax: 5000,
         timeout: 10000,
         transports: ['websocket', 'polling'], // Try WebSocket first, then fallback to polling
+        forceNew: false, // Try to reuse existing connection if possible
       });
       
       // Save as global
       globalSocket = socket;
       socketRef.current = socket;
       
-      // Connection event handlers
+      // Connection event handlers with more detailed logging
       socket.on('connect', () => {
-        console.log('Socket connected:', socket.id);
+        console.log('[Socket] Connected successfully with ID:', socket.id);
         reconnectAttempts = 0;
         setSocketReady(true);
         setIsConnected(true);
       });
       
       socket.on('disconnect', (reason) => {
-        console.log('Socket disconnected:', reason);
+        console.log('[Socket] Disconnected - Reason:', reason);
         setSocketReady(false);
         setIsConnected(false);
       });
       
       socket.on('connect_error', (error) => {
-        console.error('Socket connection error:', error);
+        console.error('[Socket] Connection error:', error);
         reconnectAttempts++;
         setSocketReady(false);
         setIsConnected(false);
         
+        console.log(`[Socket] Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
+        
         // If max reconnect attempts reached, notify user
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-          addMessage('Unable to connect to server. Please check your internet connection and try again.', 'bot');
+          addMessage('Unable to connect to server. Please check your internet connection and try again.', 'bot', false);
         }
       });
-      
+
+      // Add more detailed socket event logging
+      socket.on('reconnect', (attemptNumber) => {
+        console.log(`[Socket] Successfully reconnected after ${attemptNumber} attempts`);
+        setSocketReady(true);
+        setIsConnected(true);
+      });
+
+      socket.on('reconnect_attempt', (attemptNumber) => {
+        console.log(`[Socket] Reconnection attempt #${attemptNumber}`);
+      });
+
+      socket.on('reconnect_error', (error) => {
+        console.error('[Socket] Error during reconnection attempt:', error);
+      });
+
+      socket.on('reconnect_failed', () => {
+        console.error('[Socket] Failed to reconnect after maximum attempts');
+        addMessage('Connection to server lost. Please refresh the page to try again.', 'bot', false);
+      });
+
       // Custom event handlers
       socket.on('transcription-result', (data) => {
         console.log('Received transcription:', data);
         if (data && data.text) {
-          addMessage(data.text, 'user');
+          addMessage(data.text, 'user', false);
         }
       });
       
       socket.on('transcription', (data) => {
         console.log('Received transcription (legacy event):', data);
         if (data && data.text) {
-          addMessage(data.text, 'user');
+          addMessage(data.text, 'user', false);
         }
       });
       
@@ -145,10 +170,10 @@ const useSocket = () => {
         console.log('Received AI response:', data);
         
         if (data && data.text) {
-          addMessage(data.text, 'bot');
+          addMessage(data.text, 'bot', false);
         } else {
           console.error('Received invalid AI response:', data);
-          addMessage('Sorry, I received an invalid response. Please try again.', 'bot');
+          addMessage('Sorry, I received an invalid response. Please try again.', 'bot', false);
         }
       });
       
@@ -200,7 +225,7 @@ const useSocket = () => {
           errorMessage = String(error.message);
         }
         
-        addMessage(errorMessage, 'bot');
+        addMessage(errorMessage, 'bot', false);
         setIsProcessing(false);
       });
       
@@ -368,7 +393,7 @@ const useSocket = () => {
       
       // Add the summary to the chat messages
       if (addMessage) {
-        addMessage(`Page ${data.pageNumber} - ${data.pageTitle}: ${data.text}`, 'bot');
+        addMessage(`Page ${data.pageNumber} - ${data.pageTitle}: ${data.text}`, 'bot', false);
       }
     };
 
@@ -477,23 +502,20 @@ const useSocket = () => {
     }
   };
   
-  return { 
-    socket: socketRef.current, 
-    socketReady, 
-    sendAudio, 
-    sendTextInput, 
-    reconnect,
-    getConnectionStatus,
-    
-    // Add new properties
+  // Return socket and utility functions
+  return {
+    socket: socketRef.current,
+    socketReady,
+    sendAudio,
+    sendTextInput,
     requestPageSummary,
-    isProcessingPage,
-    currentPageSummary,
-    currentAudio,
-    isPaused,
     pauseAudio,
     resumeAudio,
-    stopAudio
+    stopAudio,
+    currentPageSummary,
+    isProcessingPage,
+    isPaused,
+    reconnect: createSocketConnection
   };
 };
 

@@ -25,7 +25,7 @@ interface AudioState {
 interface AppState {
   // Messages
   messages: Message[];
-  addMessage: (text: string, type: 'user' | 'bot') => void;
+  addMessage: (text: string, type: 'user' | 'bot', isStreaming: boolean) => void;
   clearMessages: () => void;
 
   // PDF State
@@ -52,7 +52,7 @@ interface AppState {
   setIsConnected: (isConnected: boolean) => void;
 }
 
-const useStore = create<AppState>((set) => ({
+const useStore = create<AppState>((set, get) => ({
   // Messages
   messages: [{
     id: '1',
@@ -60,18 +60,39 @@ const useStore = create<AppState>((set) => ({
     type: 'bot',
     timestamp: new Date()
   }],
-  addMessage: (text: string, type: 'user' | 'bot') => 
-    set((state) => ({
-      messages: [
-        ...state.messages,
-        {
-          id: Date.now().toString(),
-          text,
-          type,
-          timestamp: new Date()
-        }
-      ]
-    })),
+  addMessage: (text: string, type: 'user' | 'bot', isStreaming: boolean = false) => {
+    const state = get();
+    
+    // Make a copy of the current messages
+    const messages = [...state.messages];
+    
+    // Generate a unique ID for new messages
+    const messageId = isStreaming && messages.length > 0 && messages[messages.length - 1].type === type
+      ? messages[messages.length - 1].id
+      : Date.now().toString();
+    
+    if (isStreaming && messages.length > 0 && messages[messages.length - 1].type === type) {
+      // Update the last message if this is a streaming update for the same type
+      const lastMessage = messages[messages.length - 1];
+      lastMessage.text += text;
+      
+      // Update the state with the modified messages array
+      set({ messages: [...messages] });
+    } else {
+      // Add a new message
+      set({
+        messages: [
+          ...messages,
+          {
+            id: messageId,
+            text,
+            type,
+            timestamp: new Date()
+          }
+        ]
+      });
+    }
+  },
   clearMessages: () => set({ messages: [] }),
 
   // PDF State

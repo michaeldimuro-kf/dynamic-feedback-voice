@@ -1,0 +1,685 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Socket } from 'socket.io-client';
+import useStore from '../store/useStore';
+import useSocket from './useSocket';
+
+interface UseRealtimeVoiceChatOptions {
+  debugMode?: boolean;
+  initialPrompt?: string;
+  voice?: string;
+}
+
+interface RealtimeEvent {
+  type: string;
+  [key: string]: any;
+}
+
+/**
+ * Custom hook for real-time voice chat using OpenAI's real-time API
+ * This hook manages the WebSocket connections and audio streaming
+ */
+const useRealtimeVoiceChat = (options: UseRealtimeVoiceChatOptions = {}) => {
+  const { addMessage, setIsProcessing, setIsRecording } = useStore();
+  
+  // Get the socket instance from useSocket hook
+  const { socket, socketReady, reconnect, getConnectionStatus } = useSocket();
+  
+  // Options with defaults
+  const debugMode = options.debugMode || import.meta.env.VITE_DEBUG_WEBRTC === 'true';
+  const initialPrompt = options.initialPrompt || '';
+  const voice = options.voice || 'alloy';
+  
+  // State
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [connectionState, setConnectionState] = useState<string>('disconnected');
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
+  const [audioProcessor, setAudioProcessor] = useState<ScriptProcessorNode | null>(null);
+  const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
+  
+  // Refs
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioQueueRef = useRef<HTMLAudioElement[]>([]);
+  const isPlayingRef = useRef<boolean>(false);
+  
+  // Debug logging function
+  const debugLog = useCallback((message: string, ...args: unknown[]) => {
+    if (debugMode) {
+      console.log(`[RealtimeVoiceChat] ${message}`, ...args);
+    }
+  }, [debugMode]);
+  
+  // Helper function to play audio safely
+  const playAudio = useCallback((audioData: string) => {
+    try {
+      debugLog('Received audio data for playback, length:', audioData.length);
+      
+      // Determine if this is base64 data
+      const isBase64 = /^[a-zA-Z0-9+/=]*$/.test(audioData);
+      let audioBlob;
+      
+      if (isBase64) {
+        debugLog('Processing as base64 audio data');
+        // Convert base64 to blob URL
+        const byteCharacters = atob(audioData);
+        const byteNumbers = new Array(byteCharacters.length);
+        
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        
+        const byteArray = new Uint8Array(byteNumbers);
+        audioBlob = new Blob([byteArray], { type: 'audio/mp3' });
+      } else {
+        debugLog('Processing as raw audio data');
+        // Treat as raw binary data
+        audioBlob = new Blob([audioData], { type: 'audio/mp3' });
+      }
+      
+      const audioUrl = URL.createObjectURL(audioBlob);
+      debugLog('Created blob URL for audio:', audioUrl);
+      
+      // Create and play audio
+      const audio = new Audio(audioUrl);
+      
+      // Add to queue
+      audioQueueRef.current.push(audio);
+      debugLog('Added audio to playback queue, current length:', audioQueueRef.current.length);
+      
+      // If not currently playing, start playing
+      if (!isPlayingRef.current) {
+        debugLog('Starting audio playback');
+        playNextInQueue();
+      }
+    } catch (err) {
+      debugLog('Error playing audio:', err);
+    }
+  }, [debugLog]);
+  
+  // Play next audio in queue
+  const playNextInQueue = useCallback(() => {
+    if (audioQueueRef.current.length === 0) {
+      debugLog('Audio queue empty, stopping playback');
+      isPlayingRef.current = false;
+      return;
+    }
+    
+    debugLog('Playing next audio in queue');
+    isPlayingRef.current = true;
+    const audio = audioQueueRef.current.shift();
+    
+    if (audio) {
+      audio.onended = () => {
+        debugLog('Audio playback ended, releasing URL and checking queue');
+        URL.revokeObjectURL(audio.src);
+        playNextInQueue();
+      };
+      
+      audio.onerror = (e) => {
+        debugLog('Error playing audio, skipping to next:', e);
+        URL.revokeObjectURL(audio.src);
+        playNextInQueue();
+      };
+      
+      audio.play().catch(err => {
+        debugLog('Error starting audio playback:', err);
+        playNextInQueue();
+      });
+    }
+  }, [debugLog]);
+  
+  // Update connection state based on socket status
+  useEffect(() => {
+    if (socketReady) {
+      setConnectionState('connected');
+    } else {
+      setConnectionState('disconnected');
+    }
+  }, [socketReady]);
+  
+  // Set up event listeners for real-time events
+  useEffect(() => {
+    if (!socket) return;
+    
+    // Handle realtime events from the server
+    const handleRealtimeEvent = (event: RealtimeEvent) => {
+      debugLog('Received realtime event:', event);
+      
+      // Process different event types
+      switch (event.type) {
+        case 'session.created':
+          // New session started
+          debugLog('Session created by OpenAI:', event.session?.id);
+          break;
+          
+        case 'session.updated':
+          // Session configuration updated
+          debugLog('Session updated:', event.session);
+          break;
+          
+        case 'input_audio_buffer.speech_started':
+          // User started speaking
+          debugLog('Speech started');
+          break;
+          
+        case 'input_audio_buffer.speech_stopped':
+          // User stopped speaking
+          debugLog('Speech stopped');
+          break;
+          
+        case 'input_audio_buffer.committed':
+          // Audio buffer committed
+          debugLog('Audio buffer committed');
+          break;
+          
+        case 'conversation.item.created':
+          // New conversation item created
+          if (event.item) {
+            const role = event.item.role === 'user' ? 'user' : 'bot';
+            let text = '';
+            
+            if (Array.isArray(event.item.content) && event.item.content.length > 0) {
+              // Process content items
+              for (const part of event.item.content) {
+                if (part.type === 'text' || part.type === 'input_text') {
+                  text += part.text || '';
+                }
+              }
+            }
+            
+            if (text) {
+              addMessage(text, role as any, false);
+            }
+          }
+          break;
+          
+        case 'response.created':
+          debugLog('Response created:', event.response?.id);
+          setIsProcessing(true);
+          break;
+          
+        case 'response.text.delta':
+          // Incremental text updates (streaming)
+          if (event.delta && event.delta.text) {
+            addMessage(event.delta.text, 'bot', true);
+          }
+          break;
+          
+        case 'response.text.done':
+          debugLog('Text response completed');
+          break;
+          
+        case 'response.audio_transcript.delta':
+          // Text transcript of audio being played
+          debugLog('Audio transcript:', event.delta?.text);
+          if (event.delta && event.delta.text) {
+            addMessage(event.delta.text, 'bot', true);
+          }
+          break;
+          
+        case 'response.audio_transcript.done':
+          debugLog('Audio transcript completed');
+          break;
+          
+        case 'response.done':
+          // Response is complete
+          debugLog('Response completed');
+          setIsProcessing(false);
+          break;
+          
+        default:
+          debugLog('Unhandled event type:', event.type);
+      }
+    };
+    
+    // Handle audio stream
+    const handleAudioStream = (data: { audio: string, sessionId: string }) => {
+      debugLog(`Received audio stream: ${data.audio ? data.audio.substring(0, 20) + '...' : 'empty'}, sessionId: ${data.sessionId}`);
+      
+      // Make sure this is for our session
+      if (data.sessionId !== sessionId) {
+        debugLog(`Ignoring audio from different session: ${data.sessionId}`);
+        return;
+      }
+      
+      // Play the audio if we have data
+      if (data.audio && data.audio.length > 0) {
+        debugLog('Processing audio for playback');
+        playAudio(data.audio);
+        setIsStreaming(true);
+      } else {
+        debugLog('Received empty audio data');
+      }
+    };
+    
+    // Handle realtime connection status
+    const handleRealtimeConnected = (data: any) => {
+      debugLog('Realtime connection established:', data);
+      setConnectionState('ready');
+    };
+    
+    // Handle errors
+    const handleError = (error: any) => {
+      debugLog('Received error from server:', error);
+      setError(typeof error === 'string' ? error : error.message || 'Unknown error');
+      setIsProcessing(false);
+    };
+    
+    // Add event listeners
+    socket.on('realtime-event', handleRealtimeEvent);
+    socket.on('audio-stream', handleAudioStream);
+    socket.on('realtime-connected', handleRealtimeConnected);
+    socket.on('error', handleError);
+    
+    // Cleanup function
+    return () => {
+      socket.off('realtime-event', handleRealtimeEvent);
+      socket.off('audio-stream', handleAudioStream);
+      socket.off('realtime-connected', handleRealtimeConnected);
+      socket.off('error', handleError);
+    };
+  }, [socket, debugLog, addMessage, sessionId, playAudio, setIsProcessing]);
+  
+  // Create a session
+  const createSession = useCallback(async () => {
+    try {
+      debugLog('Creating Realtime session');
+      
+      if (!socket) {
+        throw new Error('Socket not connected');
+      }
+      
+      if (!socketReady) {
+        throw new Error('Socket not ready');
+      }
+      
+      // Create a promise to wait for the response
+      const promise = new Promise<string>((resolve, reject) => {
+        // Set up a one-time listener for the session creation response
+        const handleSessionCreated = (data: { sessionId: string; error?: string }) => {
+          debugLog('Received session creation response:', data);
+          socket.off('realtime-session-created', handleSessionCreated);
+          
+          if (data.error) {
+            reject(new Error(data.error));
+          } else if (data.sessionId) {
+            resolve(data.sessionId);
+          } else {
+            reject(new Error('No session ID received'));
+          }
+        };
+        
+        // Listen for the response
+        socket.on('realtime-session-created', handleSessionCreated);
+        
+        // Set a timeout
+        setTimeout(() => {
+          socket.off('realtime-session-created', handleSessionCreated);
+          reject(new Error('Session creation timeout'));
+        }, 10000);
+        
+        // Send session creation request with config
+        socket.emit('start-realtime-session', {
+          initialPrompt: initialPrompt,
+          config: {
+            voice: voice,
+            modalities: ["text", "audio"],
+            input_audio_format: "pcm_s16le",
+            output_audio_format: "mp3",
+            turn_detection: {
+              pauses: {
+                speech_threshold: 300, // 300ms of silence indicates speech pause
+                speech_end: 1000 // 1 second of silence indicates user finished speaking
+              }
+            }
+          }
+        });
+        
+        debugLog('Sent session creation request');
+      });
+      
+      // Wait for session ID
+      const newSessionId = await promise;
+      debugLog(`Session created: ${newSessionId}`);
+      
+      // Store the session ID
+      setSessionId(newSessionId);
+      
+      // Return success
+      return newSessionId;
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      debugLog('Error creating session:', error);
+      setError(`Failed to create session: ${errorMessage}`);
+      return null;
+    }
+  }, [socket, socketReady, debugLog, initialPrompt, voice]);
+  
+  // Start a session
+  const startSession = useCallback(async () => {
+    try {
+      debugLog('Starting Realtime session');
+      
+      // Create session if needed
+      if (!sessionId) {
+        const newSessionId = await createSession();
+        if (!newSessionId) {
+          throw new Error('Failed to create session');
+        }
+      }
+      
+      if (!socket) {
+        throw new Error('Socket not connected');
+      }
+      
+      // Start the session
+      const promise = new Promise<boolean>((resolve, reject) => {
+        // Set up a one-time listener for the connection response
+        const handleConnected = (data: { success: boolean; error?: string }) => {
+          debugLog('Received session connection response:', data);
+          socket.off('realtime-session-connected', handleConnected);
+          
+          if (data.error) {
+            reject(new Error(data.error));
+          } else if (data.success) {
+            resolve(true);
+          } else {
+            reject(new Error('Connection failed'));
+          }
+        };
+        
+        // Listen for the response
+        socket.on('realtime-session-connected', handleConnected);
+        
+        // Set a timeout
+        setTimeout(() => {
+          socket.off('realtime-session-connected', handleConnected);
+          reject(new Error('Session connection timeout'));
+        }, 10000);
+        
+        // Send connection request
+        socket.emit('connect-realtime-session', {
+          sessionId,
+          initialPrompt
+        });
+        
+        debugLog(`Sent connection request for session ${sessionId}`);
+      });
+      
+      // Wait for connection result
+      await promise;
+      debugLog('Session connected successfully');
+      
+      // Return success
+      return true;
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      debugLog('Error starting session:', error);
+      setError(`Failed to start session: ${errorMessage}`);
+      return false;
+    }
+  }, [socket, sessionId, createSession, debugLog, initialPrompt]);
+  
+  // Handle recording audio from the user's microphone
+  const startRecording = useCallback(async () => {
+    if (isRecording) return;
+
+    try {
+      // Request microphone access
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Create audio context
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+        sampleRate: 16000, // Use 16kHz as recommended by OpenAI
+      });
+      
+      // Create source node from microphone stream
+      const source = audioContext.createMediaStreamSource(stream);
+      
+      // Create processor node for raw PCM data
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      
+      // Connect nodes: source -> processor -> destination
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+      
+      // Handle audio processing
+      processor.onaudioprocess = (e) => {
+        if (!isRecording || !socket?.connected) return;
+        
+        // Get PCM audio data from the buffer
+        const inputBuffer = e.inputBuffer;
+        const inputData = inputBuffer.getChannelData(0);
+        
+        // Convert to 16-bit PCM (required for OpenAI Realtime API)
+        const pcmBuffer = convertFloat32ToPCM16(inputData);
+        
+        // Convert to Base64 for transmission
+        const base64Audio = arrayBufferToBase64(pcmBuffer.buffer);
+        
+        // Send to server
+        socket.emit('audio-data', {
+          sessionId,
+          audioData: base64Audio
+        });
+      };
+      
+      // Store references
+      setAudioContext(audioContext);
+      setAudioProcessor(processor);
+      setAudioStream(stream);
+      setIsRecording(true);
+      
+      console.log('Voice recording started');
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      setError(`Failed to access microphone: ${error.message}`);
+    }
+  }, [isRecording, sessionId, socket]);
+  
+  // Convert Float32Array to 16-bit PCM (Int16Array)
+  const convertFloat32ToPCM16 = (float32Array: Float32Array): Int16Array => {
+    const int16Array = new Int16Array(float32Array.length);
+    for (let i = 0; i < float32Array.length; i++) {
+      // Convert from [-1.0, 1.0] to [-32768, 32767]
+      const s = Math.max(-1, Math.min(1, float32Array[i]));
+      int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return int16Array;
+  };
+  
+  // Convert ArrayBuffer to Base64 string
+  const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return window.btoa(binary);
+  };
+  
+  // Handle audio playback
+  const handleRealtimeEvent = useCallback((event: any) => {
+    // Log for debugging
+    if (event.type) {
+      debugLog(`Received event: ${event.type}`);
+    }
+    
+    // Handle audio stream event
+    if (event.type === 'response.audio.delta' && event.delta && event.delta.audio) {
+      // Base64 audio data 
+      const audioBase64 = event.delta.audio;
+      
+      // Play the audio
+      const audio = new Audio(`data:audio/mp3;base64,${audioBase64}`);
+      audio.play().catch(err => {
+        console.error('Error playing audio:', err);
+      });
+    }
+    
+    // Handle text deltas for display in UI
+    if (event.type === 'response.text.delta' && event.delta && event.delta.text) {
+      // Update UI with streaming text
+      addMessage({
+        role: 'assistant',
+        content: event.delta.text,
+        isStreaming: true
+      });
+    }
+    
+    // Handle errors
+    if (event.type === 'error') {
+      console.error('Realtime API error:', event.error?.message || 'Unknown error');
+      setError(event.error?.message || 'Unknown error from Realtime API');
+    }
+  }, [addMessage, debugLog]);
+  
+  // End the session
+  const endSession = useCallback(async () => {
+    try {
+      debugLog('Ending session...');
+      
+      // Stop recording if needed
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        stopRecording();
+      }
+      
+      // Close the session
+      if (socket && socketReady && sessionId) {
+        socket.emit('end-realtime-session', { sessionId });
+        debugLog('Session ended:', sessionId);
+      }
+      
+      // Clean up
+      setSessionId(null);
+      setConnectionState('disconnected');
+      
+      // Stop media stream
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach(track => track.stop());
+        mediaStreamRef.current = null;
+      }
+      
+      // Close audio context
+      if (audioContextRef.current) {
+        try {
+          await audioContextRef.current.close();
+          audioContextRef.current = null;
+        } catch (err) {
+          debugLog('Error closing audio context:', err);
+        }
+      }
+      
+      return true;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      debugLog('Error ending session:', err);
+      setError(`Session error: ${errorMessage}`);
+      return false;
+    }
+  }, [debugLog, socket, socketReady, sessionId, stopRecording]);
+  
+  // Clean up when component unmounts
+  useEffect(() => {
+    return () => {
+      // End session and clean up
+      endSession().catch(err => {
+        debugLog('Error during cleanup:', err);
+      });
+    };
+  }, [endSession, debugLog]);
+  
+  // Expose the media stream for visualization
+  const getMediaStream = useCallback(() => {
+    return mediaStreamRef.current;
+  }, []);
+  
+  // Stop recording
+  const stopRecording = useCallback(() => {
+    debugLog('Stopping recording');
+    
+    // Stop audio processor
+    if (audioProcessor) {
+      audioProcessor.disconnect();
+    }
+    
+    // Stop media stream tracks
+    if (audioStream) {
+      audioStream.getTracks().forEach(track => track.stop());
+    }
+    
+    // Close audio context
+    if (audioContext && audioContext.state !== 'closed') {
+      audioContext.close().catch(err => console.error('Error closing audio context:', err));
+    }
+    
+    // Reset state
+    setAudioContext(null);
+    setAudioProcessor(null);
+    setAudioStream(null);
+    setIsRecording(false);
+  }, [audioProcessor, audioStream, audioContext, debugLog]);
+  
+  return {
+    // Voice chat state
+    sessionId,
+    connectionState,
+    isConnected: connectionState === 'ready',
+    isConnecting: connectionState === 'connecting',
+    isReady: socket !== null && socketReady && connectionState === 'ready',
+    error,
+    
+    // Audio recording state
+    get isRecording() { return useStore.getState().audioState.isRecording },
+    isStreaming, 
+    get isProcessing() { return useStore.getState().audioState.isProcessing },
+    
+    // Actions
+    createSession,
+    connectSession: startSession,
+    startSession,
+    startRecording,
+    stopRecording,
+    endSession,
+    resetHook: () => {
+      // Reset connection state
+      setConnectionState('disconnected');
+      setSessionId(null);
+      setError(null);
+      setIsStreaming(false);
+      
+      // Reset store state
+      setIsRecording(false);
+      setIsProcessing(false);
+      
+      // Clean up media resources
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach(track => track.stop());
+        mediaStreamRef.current = null;
+      }
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current = null;
+      }
+      if (audioContextRef.current) {
+        try {
+          if (audioContextRef.current.state !== 'closed') {
+            audioContextRef.current.close();
+          }
+        } catch (err) {
+          debugLog('Error closing audio context:', err);
+        }
+        audioContextRef.current = null;
+      }
+    },
+    requestMicrophone,
+    
+    // Media access
+    getMediaStream,
+  };
+};
+
+export default useRealtimeVoiceChat; 

@@ -110,4 +110,101 @@ Both the client and server applications include comprehensive READMEs with more 
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+# LiveFeedback - Real-time Voice Chat with OpenAI
+
+A real-time voice chat application that uses OpenAI's Realtime API to enable speech-to-speech conversations with an AI assistant.
+
+## Features
+
+- Real-time voice conversations with OpenAI's GPT-4o Realtime model
+- Audio visualization during recording
+- WebSocket communication between client and server
+- Custom system prompts for tailored AI responses
+- Keyboard shortcuts (spacebar) for hands-free recording
+
+## Prerequisites
+
+- Node.js v18+
+- npm or yarn
+- OpenAI API key with access to Realtime API (GPT-4o Realtime Preview)
+
+## Setup
+
+### Environment Variables
+
+1. Server:
+   Create a `.env` file in the `server` directory with the following:
+   ```
+   OPENAI_API_KEY=your_openai_api_key_here
+   CLIENT_URL=http://localhost:5173
+   DEBUG_MODE=true
+   PORT=3000
+   ```
+
+2. Client:
+   Create a `.env` file in the `client` directory with the following:
+   ```
+   VITE_SERVER_URL=http://localhost:3000
+   VITE_DEBUG_SOCKET=true
+   VITE_DEBUG_WEBRTC=true
+   ```
+
+### Installation
+
+1. Clone the repository
+   ```
+   git clone https://github.com/yourusername/LiveFeedback.git
+   cd LiveFeedback
+   ```
+
+2. Install server dependencies
+   ```
+   cd server
+   npm install
+   ```
+
+3. Install client dependencies
+   ```
+   cd ../client
+   npm install
+   ```
+
+### Running the Application
+
+1. Start the server
+   ```
+   cd server
+   npm run start:dev
+   ```
+
+2. Start the client
+   ```
+   cd client
+   npm run dev
+   ```
+
+3. Open your browser and navigate to `http://localhost:5173`
+
+## Usage
+
+1. Click the microphone button or press the spacebar to start recording
+2. Speak clearly into your microphone
+3. Click the button again or press spacebar to stop recording
+4. The AI will process your speech and respond both in text and audio
+
+## System Prompt
+
+You can customize the AI's behavior by modifying the system prompt. Click on "Show System Prompt" to view and edit the default prompt.
+
+## Troubleshooting
+
+- Make sure your browser has permission to access your microphone
+- Check browser console for any error messages
+- Verify your OpenAI API key has access to the Realtime API
+- Ensure both client and server are running
+
+## License
+
+MIT 
