@@ -12,10 +12,12 @@ interface WebRTCConnectionResponse {
   session_id: string;
 }
 
-interface RealtimeSession {
+export interface RealtimeSession {
   id: string;
+  sessionId: string;
   clientId: string;
   clientSocket?: Socket;
+  clientSocketIds: string[];
   state: 'created' | 'connecting' | 'connected' | 'disconnected';
   modelConnection?: WebSocket;
   config: {
@@ -24,10 +26,7 @@ interface RealtimeSession {
     inputFormat: string;
     outputFormat: string;
     turn_detection?: {
-      pauses?: {
-        speech_threshold?: number;
-        speech_end?: number;
-      }
+      type?: string;
     };
     [key: string]: any;
   };
@@ -41,6 +40,9 @@ interface RealtimeSession {
   clientCallbacks: {
     onEvent?: (event: any) => void;
   };
+  audioData?: Uint8Array[];
+  _connectingInProgress?: boolean;
+  _clientDisconnected?: boolean;
 }
 
 @Injectable()
@@ -168,44 +170,46 @@ export class WebRTCService implements OnModuleDestroy {
   }
   
   /**
-   * Create a Realtime API session
-   * @param sessionId Client's session ID 
-   * @param config Optional configuration for the session
+   * Create a new realtime session
    */
-  createRealtimeSession(sessionId: string, config: any = {}): boolean {
+  public createRealtimeSession(sessionId: string, config: any = {}): RealtimeSession {
     try {
-      if (this.realtimeSessions.has(sessionId)) {
-        this.logger.warn(`Session ${sessionId} already exists`);
-        return true;
-      }
-      
-      this.logger.log(`Creating new Realtime session with ID: ${sessionId}`);
+      this.logger.log(`Creating realtime session with ID: ${sessionId}`);
       
       // Create the session with initial properties
       this.realtimeSessions.set(sessionId, {
         id: sessionId,
+        sessionId: sessionId,
         clientId: sessionId,
-        clientSocket: null, // This will be set by the gateway
+        clientSocket: null,
+        clientSocketIds: [],
         state: 'created',
         config: {
           voice: config.voice || 'alloy',
           modalities: config.modalities || ["text", "audio"],
-          inputFormat: "pcm_s16le", // Updated to use raw PCM audio
-          outputFormat: "mp3", // MP3 for output
+          inputFormat: "pcm16",
+          outputFormat: "pcm16",
+          turn_detection: {
+            type: "server_vad"
+          },
           ...config
         },
         active: true,
         createdAt: new Date(),
         lastActivity: new Date(),
         clientCallbacks: {
-          onEvent: () => {} // Default no-op callback
-        }
+          onEvent: () => {}
+        },
+        audioData: []
       });
       
-      return true;
+      const session = this.realtimeSessions.get(sessionId);
+      this.logger.log(`Realtime session created with ID: ${sessionId}`);
+      
+      return session;
     } catch (error) {
-      this.logger.error('Error creating Realtime session:', error);
-      return false;
+      this.logger.error(`Error creating realtime session with ID ${sessionId}:`, error);
+      throw error;
     }
   }
   
@@ -306,13 +310,10 @@ export class WebRTCService implements OnModuleDestroy {
                 instructions: initialPrompt || 'You are a helpful AI assistant. Answer the user\'s questions in a friendly and concise manner.',
                 voice: session.config.voice,
                 modalities: session.config.modalities,
-                input_audio_format: "pcm_s16le",
-                output_audio_format: "mp3",
+                input_audio_format: "pcm16",
+                output_audio_format: "pcm16",
                 turn_detection: {
-                  pauses: {
-                    speech_threshold: 300, // 300ms of silence indicates speech pause
-                    speech_end: 1000 // 1 second of silence indicates user finished speaking
-                  }
+                  type: "server_vad"
                 }
               }
             };
@@ -348,6 +349,18 @@ export class WebRTCService implements OnModuleDestroy {
               
               // Log event type
               this.logger.log(`Received event type: ${event.type} for session ${sessionId}`);
+              
+              // Add more detailed logging for audio events
+              if (event.type === 'response.audio.delta') {
+                const hasAudio = !!(event.delta && event.delta.audio);
+                const audioLength = hasAudio ? event.delta.audio.length : 0;
+                this.logger.log(`Received audio delta for session ${sessionId} - Has audio: ${hasAudio}, Length: ${audioLength}`);
+                
+                if (hasAudio) {
+                  // Log a sample of the audio data for debugging
+                  this.logger.log(`Audio data sample: ${event.delta.audio.substring(0, 20)}... (${audioLength} chars)`);
+                }
+              }
               
               // Process the event by type
               this.handleRealtimeEvent(sessionId, event, session.clientCallbacks.onEvent);
@@ -416,13 +429,13 @@ export class WebRTCService implements OnModuleDestroy {
       // Get the session
       const session = this.realtimeSessions.get(sessionId);
       if (!session) {
-        this.logger.error(`Session ${sessionId} not found`);
+        this.logger.error(`❌ Cannot send audio: Session ${sessionId} not found`);
         return false;
       }
 
       // Check if connected
       if (session.state !== 'connected' || !session.modelConnection) {
-        this.logger.error(`Session ${sessionId} is not connected`);
+        this.logger.error(`❌ Cannot send audio: Session ${sessionId} is not connected (state: ${session.state}, hasConnection: ${!!session.modelConnection})`);
         return false;
       }
 
@@ -433,163 +446,129 @@ export class WebRTCService implements OnModuleDestroy {
       // Base64 encode the audio buffer
       const base64Audio = Buffer.from(audioBuffer).toString('base64');
       
-      // Log audio length in debug mode
+      // Log audio stats
+      const audioSize = base64Audio.length;
+      this.logger.log(`📤 Sending audio to OpenAI: session=${sessionId}, data size=${audioSize} chars`);
+      
+      // Log audio sample if in debug mode
       if (this.debugMode) {
-        this.logger.debug(`Sending base64 audio (${base64Audio.length} chars) to OpenAI for session ${sessionId}`);
+        this.logger.debug(`📊 Base64 audio sample: ${base64Audio.substring(0, 20)}... (${audioSize} total chars)`);
       }
       
       try {
         // Send audio buffer to the model via the WebSocket connection
         // Using input_audio_buffer.append as per the realtime API docs
-        session.modelConnection.send(JSON.stringify({
+        const payload = JSON.stringify({
           type: 'input_audio_buffer.append',
           audio: base64Audio
-        }));
+        });
+        
+        session.modelConnection.send(payload);
+        this.logger.log(`✅ Successfully sent ${audioSize} bytes of audio data to OpenAI for session ${sessionId}`);
         
         return true;
       } catch (wsError) {
-        this.logger.error(`WebSocket send error for session ${sessionId}:`, wsError);
+        // Detailed error for WebSocket send failures
+        const errorMessage = wsError.message || 'Unknown WebSocket error';
+        this.logger.error(`❌ WebSocket send error for session ${sessionId}: ${errorMessage}`);
+        
+        // Check WebSocket state
+        if (session.modelConnection) {
+          const wsState = session.modelConnection.readyState;
+          const stateMap = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
+          this.logger.error(`❌ WebSocket state: ${stateMap[wsState] || wsState}`);
+        }
+        
         return false;
       }
     } catch (error) {
-      this.logger.error('Error sending audio buffer:', error);
+      this.logger.error(`❌ Error sending audio buffer for session ${sessionId}: ${error.message}`);
       return false;
     }
   }
   
   /**
-   * Handle Realtime events from OpenAI
-   * @param sessionId The session ID
-   * @param event The event received from OpenAI
-   * @param callback The callback to send the event to the client
+   * Handle events from the realtime API
    */
-  private handleRealtimeEvent(
-    sessionId: string, 
-    event: any, 
-    callback?: (event: any) => void
-  ): void {
-    // Ignore if no callback
-    if (!callback) {
-      return;
-    }
-
+  private handleRealtimeEvent(sessionId: string, event: any, callback?: (event: any) => void): void {
     try {
-      const session = this.realtimeSessions.get(sessionId);
-      if (!session) {
-        this.logger.error(`Session ${sessionId} not found when handling event`);
-        return;
-      }
-
-      // Update activity timestamp
-      session.lastActivity = new Date();
-
-      // Log the event type
       if (this.debugMode) {
-        this.logger.debug(`Processing event type: ${event.type} for session ${sessionId}`);
+        this.logger.debug(`Handling event type ${event.type} for session ${sessionId}`);
       }
-
-      // Process based on event type
+      
+      // Process the event based on type
       switch (event.type) {
-        case 'message':
-          // General message event
-          this.logger.log(`Message from OpenAI: ${event.message}`);
-          callback(event);
-          break;
-
         case 'session.created':
+          this.logger.log(`Session created for ${sessionId}`);
+          break;
+          
         case 'session.updated':
-          // Session events
-          this.logger.log(`Session ${event.type}: ${JSON.stringify(event.session)}`);
-          callback(event);
+          this.logger.log(`Session updated for ${sessionId}`);
           break;
-
+          
         case 'response.created':
-          // New response started
-          session.currentResponseId = event.response.id;
-          this.logger.log(`New response created: ${session.currentResponseId}`);
-          callback(event);
+          this.logger.log(`Response created for ${sessionId}`);
           break;
-
+          
         case 'response.text.delta':
-          // Text deltas (streaming text)
           if (this.debugMode) {
-            this.logger.debug(`Text delta: ${event.delta.text}`);
+            const text = event.delta?.text || '';
+            this.logger.debug(`Text delta for ${sessionId}: ${text.length > 0 ? text : '(empty)'}`);
           }
-          callback(event);
           break;
-
+          
         case 'response.audio.delta':
-          // Audio deltas (streaming audio)
-          if (this.debugMode) {
-            this.logger.debug(`Audio delta: ${event.delta.audio ? `${event.delta.audio.substring(0, 20)}... (${event.delta.audio.length} chars)` : 'empty'}`);
+          // Enhanced audio logging
+          const audioData = event.delta?.audio || '';
+          const audioLength = audioData.length;
+          
+          if (audioLength > 0) {
+            this.logger.log(`Audio delta for ${sessionId} - Length: ${audioLength} chars`);
+            // Log a sample of the Base64 data
+            this.logger.log(`Audio data sample: ${audioData.substring(0, 20)}... (${audioLength} total chars)`);
+          } else {
+            this.logger.warn(`Empty audio delta received for ${sessionId}`);
           }
-          callback(event);
           break;
-
-        case 'response.audio_transcript.delta':
-          // Audio transcript deltas (transcription of the audio being returned)
-          if (this.debugMode) {
-            this.logger.debug(`Audio transcript delta: ${event.delta.text}`);
-          }
-          callback(event);
-          break;
-
-        case 'response.audio.final':
-          // Final audio received
-          this.logger.log(`Final audio received for response ${session.currentResponseId}`);
-          callback(event);
-          break;
-
+          
         case 'response.text.final':
-          // Final text received
-          this.logger.log(`Final text received for response ${session.currentResponseId}`);
-          callback(event);
+          this.logger.log(`Final text received for ${sessionId}`);
           break;
-
+          
+        case 'response.audio.final':
+          this.logger.log(`Final audio received for ${sessionId}`);
+          break;
+          
         case 'response.completed':
-          // Response completed
-          this.logger.log(`Response completed: ${session.currentResponseId}`);
-          session.currentResponseId = null;
-          callback(event);
+          this.logger.log(`Response completed for ${sessionId}`);
           break;
-
-        case 'input_audio_buffer.speech_started':
-          // User speech started
-          this.logger.log(`Speech started`);
-          callback(event);
-          break;
-
-        case 'input_audio_buffer.speech_stopped':
-          // User speech stopped
-          this.logger.log(`Speech stopped`);
-          callback(event);
-          break;
-
-        case 'input_audio_buffer.committed':
-          // Audio buffer committed
-          if (this.debugMode) {
-            this.logger.debug(`Audio buffer committed: ${event.duration_ms}ms`);
-          }
-          callback(event);
-          break;
-
+          
         case 'error':
-          // Error event
-          this.logger.error(`Error from OpenAI: ${event.error.message}`);
-          callback(event);
+          const errorMessage = event.error?.message || 'Unknown error';
+          this.logger.error(`Error from API for ${sessionId}: ${errorMessage}`, event.error);
           break;
-
+          
         default:
-          // Unknown event type
-          this.logger.warn(`Unknown event type: ${event.type}`);
-          callback(event);
+          this.logger.log(`Unhandled event type: ${event.type} for ${sessionId}`);
           break;
       }
-    } catch (error) {
-      this.logger.error(`Error handling realtime event: ${error.message}`);
-      if (this.debugMode) {
-        this.logger.debug(`Event was: ${JSON.stringify(event)}`);
+      
+      // Forward the event to the client if a callback is provided
+      if (callback) {
+        try {
+          callback(event);
+          
+          if (this.debugMode) {
+            this.logger.debug(`Event ${event.type} forwarded to client for session ${sessionId}`);
+          }
+        } catch (err) {
+          this.logger.error(`Error in client callback for session ${sessionId}:`, err);
+        }
+      } else {
+        this.logger.warn(`No callback available for session ${sessionId}, can't forward event ${event.type}`);
       }
+    } catch (err) {
+      this.logger.error(`Error handling event for session ${sessionId}:`, err);
     }
   }
   
@@ -757,20 +736,25 @@ export class WebRTCService implements OnModuleDestroy {
   }
 
   /**
-   * Associate a client socket with a session
-   * @param sessionId Client's session ID
-   * @param clientSocket The client socket
+   * Associate a client socket with a realtime session
    */
-  async associateClientSocket(sessionId: string, clientSocket: Socket): Promise<RealtimeSession | null> {
+  public associateClientSocket(sessionId: string, clientSocket: Socket): RealtimeSession {
     try {
+      this.logger.log(`Associating client socket ${clientSocket.id} with session ${sessionId}`);
+      
       const session = this.realtimeSessions.get(sessionId);
       if (!session) {
         this.logger.error(`Session ${sessionId} not found`);
-        return null;
+        throw new Error(`Session ${sessionId} not found`);
       }
       
       // Store the client socket
       session.clientSocket = clientSocket;
+      
+      // Add client socket ID to the array if not already present
+      if (!session.clientSocketIds.includes(clientSocket.id)) {
+        session.clientSocketIds.push(clientSocket.id);
+      }
       
       // Set up client event callback
       session.clientCallbacks = {
@@ -802,7 +786,14 @@ export class WebRTCService implements OnModuleDestroy {
       return session;
     } catch (error) {
       this.logger.error(`Error associating client socket: ${error.message}`);
-      return null;
+      throw error;
     }
+  }
+
+  /**
+   * Get all current realtime session IDs (for debugging)
+   */
+  public getSessionIds(): string[] {
+    return Array.from(this.realtimeSessions.keys());
   }
 } 

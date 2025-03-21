@@ -33,7 +33,8 @@ const AudioRecorder: React.FC = () => {
     isRecording,
     isProcessing,
     isStreaming,
-    endSession
+    endSession,
+    runConnectionDiagnostics
   } = useRealtimeVoiceChat({
     debugMode: true,
     initialPrompt: 'You are a helpful assistant that answers questions about documents. Keep your answers concise and friendly.',
@@ -54,40 +55,51 @@ const AudioRecorder: React.FC = () => {
   // Toggle recorder visibility
   const toggleRecorder = () => {
     setShowRecorder(!showRecorder);
+    
+    // Run diagnostics when opening the recorder
+    if (!showRecorder) {
+      console.log("Running connection diagnostics...");
+      runConnectionDiagnostics().then(results => {
+        console.log("Connection diagnostics results:", results);
+      });
+    }
   };
   
   // Handle button click to start/stop recording
   const handleRecordButtonClick = useCallback(async () => {
     if (isRecordingRef.current) {
       // If already recording, stop it
-      console.log("Stopping recording...");
+      console.log("🛑 Stopping recording...");
       stopRecording();
       isRecordingRef.current = false;
+      console.log("🛑 Recording stopped!");
     } else {
       // If not recording, start it
-      console.log("Starting recording...");
+      console.log("🎙️ Starting recording...");
       try {
         // Ensure we have a session first
         if (!sessionId) {
-          console.log("No session, starting one...");
+          console.log("🔄 No session, starting one...");
           await startSession();
+          console.log(`🔄 Session started: ${sessionId}`);
         }
         
         // Start the actual recording
         const success = await startRecording();
         if (success) {
           isRecordingRef.current = true;
-          console.log("Recording started successfully");
+          console.log("✅ Recording started successfully! Speak now...");
+          console.log("📊 Audio data should now be visible in server logs");
         } else {
-          console.error("Failed to start recording");
+          console.error("❌ Failed to start recording");
           setErrorMessage("Failed to start recording");
         }
       } catch (err) {
-        console.error("Error starting recording:", err);
+        console.error("❌ Error starting recording:", err);
         setErrorMessage(err instanceof Error ? err.message : String(err));
       }
     }
-  }, [sessionId, startSession, startRecording, stopRecording]);
+  }, [sessionId, startSession, startRecording, stopRecording, runConnectionDiagnostics]);
   
   // Clean up when component unmounts
   useEffect(() => {

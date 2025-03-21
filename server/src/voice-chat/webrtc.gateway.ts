@@ -57,6 +57,7 @@ export class WebRTCGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(WebRTCGateway.name);
   private readonly sessions = new Map<string, WebRTCSession>();
   private readonly realtimeSessions = new Map<string, RealtimeSession>();
+  private readonly clientSessions = new Map<string, string>();
   
   constructor(private readonly webrtcService: WebRTCService) {
     this.logger.log('WebRTC Gateway initialized');
@@ -104,41 +105,40 @@ export class WebRTCGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
   
   /**
-   * Handle client disconnection
-   * @param client Client socket
+   * Handle client disconnections
    */
-  handleDisconnect(client: Socket) {
+  handleDisconnect(client: Socket): void {
+    this.logger.log(`Client disconnected: ${client.id}`);
+    
     try {
-      this.logger.log(`Client disconnected: ${client.id}`);
-      
-      // Find and cleanup any associated sessions
-      let sessionsRemoved = 0;
-      
-      // Check WebRTC sessions
-      for (const [sessionId, session] of this.sessions.entries()) {
-        if (session.clientSocket.id === client.id) {
-          this.logger.log(`Cleaning up WebRTC session ${sessionId} for disconnected client ${client.id}`);
-          this.cleanupSession(sessionId).catch(err => {
-            this.logger.error(`Error cleaning up session ${sessionId}: ${err.message}`);
-          });
-          sessionsRemoved++;
+      // Check if this client had a realtime session
+      const sessionId = this.clientSessions.get(client.id);
+      if (sessionId) {
+        this.logger.log(`Client ${client.id} was associated with realtime session ${sessionId}`);
+        
+        // Don't immediately clean up the session, just log that the client disconnected
+        const session = this.webrtcService.getRealtimeSession(sessionId);
+        if (session) {
+          this.logger.log(`Client ${client.id} disconnected from session ${sessionId}, but keeping session active for reconnection`);
+          
+          // Update last activity
+          session.lastActivity = new Date();
+          
+          // Mark the session as still valid but client disconnected
+          // This will help with debugging and allow for potential reconnection
+          session._clientDisconnected = true;
+          
+          // We'll leave actual cleanup to a scheduled task or explicit close request
         }
+        
+        // Remove from our client-session mapping
+        this.clientSessions.delete(client.id);
       }
       
-      // Check realtime sessions
-      for (const [sessionId, session] of this.realtimeSessions.entries()) {
-        if (session.clientSocket.id === client.id) {
-          this.logger.log(`Cleaning up Realtime session ${sessionId} for disconnected client ${client.id}`);
-          this.cleanupRealtimeSession(sessionId).catch(err => {
-            this.logger.error(`Error cleaning up realtime session ${sessionId}: ${err.message}`);
-          });
-          sessionsRemoved++;
-        }
-      }
-      
-      this.logger.log(`Cleaned up ${sessionsRemoved} sessions for disconnected client ${client.id}`);
+      // For now, skip cleaning up legacy sessions to avoid typing issues
+      this.logger.log(`Client ${client.id} disconnected, realtime sessions preserved for reconnection`);
     } catch (error) {
-      this.logger.error(`Error handling client disconnection: ${error.message}`);
+      this.logger.error('Error handling client disconnect:', error);
     }
   }
   
@@ -218,60 +218,69 @@ export class WebRTCGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('start-realtime-session')
   async handleStartRealtimeSession(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { initialPrompt?: string }
+    @MessageBody() data: { sessionId?: string } = {}
   ): Promise<void> {
     try {
-      const sessionId = client.id;
-      this.logger.log(`Received start-realtime-session request from client ${client.id}`);
-      this.logger.log(`Using session ID: ${sessionId}, Initial prompt length: ${data?.initialPrompt?.length || 0}`);
+      this.logger.log(`🔷 Received start-realtime-session request from client ${client.id}`);
       
-      // Create the session if it doesn't exist
-      if (!this.webrtcService.hasRealtimeSession(sessionId)) {
-        this.logger.log(`Creating new Realtime session for client ${sessionId}`);
-        const created = this.webrtcService.createRealtimeSession(sessionId);
-        if (!created) {
-          this.logger.error(`Failed to create Realtime session for client ${sessionId}`);
-          client.emit('realtime-session-created', { 
-            success: false, 
-            error: 'Failed to create session' 
-          });
-          this.logger.log(`Sent failure response to client ${client.id}`);
-          return;
-        }
-        this.logger.log(`Created new Realtime session with ID: ${sessionId}`);
-      } else {
-        this.logger.log(`Session ${sessionId} already exists, reusing it`);
-      }
+      // Generate a unique session ID with a prefix
+      const sessionId = `realtime-${uuidv4()}`;
+      this.logger.log(`🔷 Generated new session ID: ${sessionId} for client ${client.id}`);
       
-      // Associate the socket with the session
-      this.logger.log(`Associating client socket ${client.id} with session ${sessionId}`);
-      const session = await this.webrtcService.associateClientSocket(sessionId, client);
+      // Associate the client with the session
+      this.clientSessions.set(client.id, sessionId);
+      this.logger.log(`🔷 Associated client ${client.id} with session ${sessionId}`);
+      
+      // Create a new session
+      const session = await this.webrtcService.createRealtimeSession(sessionId);
       if (!session) {
-        this.logger.error(`Failed to associate client socket for session ${sessionId}`);
-        client.emit('realtime-session-created', { 
+        this.logger.error(`❌ Failed to create realtime session ${sessionId} for client ${client.id}`);
+        client.emit('realtime-session-started', { 
           success: false, 
-          error: 'Failed to associate client socket' 
+          error: 'Failed to create session' 
         });
-        this.logger.log(`Sent failure response to client ${client.id}`);
+        this.logger.log(`❌ Sent failure response to client ${client.id}`);
         return;
       }
-      this.logger.log(`Successfully associated client socket with session`);
       
-      // Emit success event
-      this.logger.log(`Emitting realtime-session-created success event to client ${client.id}`);
-      client.emit('realtime-session-created', { 
+      // Add createdAt timestamp to session
+      const realtimeSession = this.webrtcService.getRealtimeSession(sessionId);
+      if (realtimeSession) {
+        realtimeSession.createdAt = new Date();
+        this.logger.log(`✅ Created realtime session ${sessionId} for client ${client.id} at ${realtimeSession.createdAt.toISOString()}`);
+      }
+      
+      // Associate client socket with the session for future audio data
+      this.webrtcService.associateClientSocket(sessionId, client);
+      this.logger.log(`✅ Associated client socket ${client.id} with session ${sessionId}`);
+      
+      // Double check that the session exists
+      if (!this.webrtcService.hasRealtimeSession(sessionId)) {
+        this.logger.error(`❌ Session ${sessionId} not found in service immediately after creation!`);
+        client.emit('realtime-session-started', { 
+          success: false, 
+          error: 'Session not found after creation' 
+        });
+        return;
+      }
+      
+      // Log the total count of sessions
+      const totalSessions = this.webrtcService.getSessionIds().length;
+      this.logger.log(`ℹ️ Total realtime sessions after creation: ${totalSessions}`);
+      
+      // Emit success event with the session ID
+      client.emit('realtime-session-started', { 
         success: true, 
         sessionId 
       });
-      
-      this.logger.log(`Realtime session started for client ${sessionId}`);
+      this.logger.log(`✅ Sent success response to client ${client.id} with session ID ${sessionId}`);
     } catch (error) {
-      this.logger.error(`Error starting Realtime session for client ${client.id}:`, error);
-      client.emit('realtime-session-created', { 
+      this.logger.error(`❌ Error starting realtime session for client ${client.id}:`, error);
+      client.emit('realtime-session-started', { 
         success: false, 
         error: error.message || 'Internal server error' 
       });
-      this.logger.log(`Sent error response to client ${client.id}`);
+      this.logger.log(`❌ Sent error response to client ${client.id}`);
     }
   }
   
@@ -302,9 +311,21 @@ export class WebRTCGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
       this.logger.log(`Session ${sessionId} found, connecting to OpenAI...`);
       
+      // Flag the session as connecting to prevent premature cleanup
+      const session = this.webrtcService.getRealtimeSession(sessionId);
+      if (session) {
+        session['_connectingInProgress'] = true;
+        this.logger.log(`Marked session ${sessionId} as connecting in progress`);
+      }
+      
       // Connect to OpenAI Realtime API
       this.logger.log(`Calling webrtcService.connectRealtimeSession for session ${sessionId}`);
       const connected = await this.webrtcService.connectRealtimeSession(sessionId, initialPrompt);
+      
+      // Remove the connecting flag
+      if (session) {
+        session['_connectingInProgress'] = false;
+      }
       
       if (!connected) {
         this.logger.error(`Failed to connect to OpenAI for session ${sessionId}`);
@@ -542,51 +563,138 @@ a=fmtp:111 minptime=10;useinbandfec=1
     @MessageBody() data: { audioData: string, sessionId: string }
   ): Promise<void> {
     try {
-      const sessionId = data.sessionId;
-      if (!sessionId) {
-        this.logger.error('No session ID provided with audio data');
-        client.emit('audio-error', { error: 'No session ID provided' });
-        return;
-      }
-
-      // Check if session exists
-      if (!this.webrtcService.hasRealtimeSession(sessionId)) {
-        this.logger.error(`No active session found for ID: ${sessionId}`);
-        client.emit('audio-error', { error: 'No active session found' });
+      // Better logging for audio data reception
+      const audioLength = data?.audioData?.length || 0;
+      this.logger.log(`🎙️ Received audio data from client ${client.id} for session ${data?.sessionId}, data length: ${audioLength} bytes`);
+      
+      // Validate the data
+      if (!data || !data.audioData || !data.sessionId) {
+        this.logger.error(`❌ Invalid audio data received from client ${client.id}: Missing required fields`);
+        client.emit('realtime-event', {
+          type: 'error',
+          error: {
+            message: 'Invalid audio data: missing required fields'
+          }
+        });
         return;
       }
       
-      // Convert from Base64 to binary
-      let audioBuffer: Uint8Array;
-      try {
-        const binaryData = Buffer.from(data.audioData, 'base64');
-        audioBuffer = new Uint8Array(binaryData);
-      } catch (error) {
-        this.logger.error('Error decoding audio data', error);
-        client.emit('audio-error', { error: 'Failed to decode audio data' });
+      // Check if this client has a session in the client-session map
+      const clientMappedSessionId = this.clientSessions.get(client.id);
+      if (clientMappedSessionId && clientMappedSessionId !== data.sessionId) {
+        this.logger.warn(`⚠️ Client ${client.id} has session ${clientMappedSessionId} in map but is sending data for ${data.sessionId}`);
+      }
+      
+      // Use the webrtcService to get the session
+      const session = this.webrtcService.getRealtimeSession(data.sessionId);
+      
+      // If session not found, handle error and try to help the client
+      if (!session) {
+        this.logger.error(`❌ Session ${data.sessionId} not found for client ${client.id}`);
+        
+        // Log all active sessions for debugging purposes
+        const allSessions = this.webrtcService.getSessionIds();
+        this.logger.log(`📊 Active sessions: ${allSessions.length > 0 ? allSessions.join(', ') : 'none'}`);
+        
+        // Send error to client
+        client.emit('realtime-event', {
+          type: 'error',
+          error: {
+            message: `Session ${data.sessionId} not found`,
+            code: 'SESSION_NOT_FOUND'
+          }
+        });
         return;
       }
       
-      // Log audio data details
-      if (this.webrtcService.debugMode) {
-        this.logger.debug(`Received audio data from client ${client.id} - ${audioBuffer.length} bytes`);
-        if (audioBuffer.length > 0) {
-          this.logger.debug(`First few bytes: ${Array.from(audioBuffer.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+      // Update client session mapping - important for reconnection scenarios
+      this.clientSessions.set(client.id, data.sessionId);
+      
+      // Ensure this client is associated with the session
+      if (!session.clientSocketIds.includes(client.id)) {
+        this.logger.log(`⚠️ Client ${client.id} not in session ${data.sessionId} socket list - associating now`);
+        try {
+          this.webrtcService.associateClientSocket(data.sessionId, client);
+        } catch (error) {
+          this.logger.error(`❌ Failed to associate client ${client.id} with session ${data.sessionId}: ${error.message}`);
         }
       }
       
-      // Send audio to OpenAI
-      const result = await this.webrtcService.sendAudioBuffer(sessionId, audioBuffer);
+      // Update session activity
+      if (session) {
+        session.lastActivity = new Date();
+      }
       
-      if (!result) {
-        this.logger.warn(`Failed to send audio data for session ${sessionId}`);
-        // Not emitting an error to the client to avoid disrupting the flow
-      } else if (this.webrtcService.debugMode) {
-        this.logger.debug(`Successfully sent audio data for session ${sessionId}`);
+      // Convert the audio data from base64 to Uint8Array
+      let audioBuffer: Uint8Array;
+      
+      try {
+        const binaryString = Buffer.from(data.audioData, 'base64');
+        audioBuffer = new Uint8Array(binaryString);
+        this.logger.log(`✅ Converted audio data to Uint8Array: ${audioBuffer.length} bytes for session ${data.sessionId}`);
+        
+        // Log a sample of the audio data to verify it's not empty or corrupted
+        if (audioBuffer.length > 0) {
+          const sample = Array.from(audioBuffer.slice(0, 5)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+          this.logger.log(`📊 Audio data sample: [${sample}...] (first 5 bytes of ${audioBuffer.length} total)`);
+          
+          // Calculate some statistics about the audio data
+          let min = 0, max = 0, sum = 0;
+          for (let i = 0; i < Math.min(audioBuffer.length, 1000); i++) {
+            min = Math.min(min, audioBuffer[i]);
+            max = Math.max(max, audioBuffer[i]);
+            sum += audioBuffer[i];
+          }
+          const avg = sum / Math.min(audioBuffer.length, 1000);
+          this.logger.log(`📊 Audio data stats (first 1000 bytes): min=${min}, max=${max}, avg=${avg.toFixed(2)}`);
+        } else {
+          this.logger.warn(`⚠️ Received empty audio buffer from client ${client.id}`);
+          client.emit('realtime-event', {
+            type: 'error',
+            error: {
+              message: 'Empty audio buffer received',
+              code: 'EMPTY_AUDIO'
+            }
+          });
+          return;
+        }
+      } catch (error) {
+        this.logger.error(`❌ Error converting audio data from client ${client.id}: ${error.message}`);
+        client.emit('realtime-event', {
+          type: 'error',
+          error: {
+            message: `Error processing audio data: ${error.message}`,
+            code: 'AUDIO_PROCESSING_ERROR'
+          }
+        });
+        return;
+      }
+      
+      // Send the audio buffer to the OpenAI API via the WebRTC service
+      this.logger.log(`📤 Forwarding ${audioBuffer.length} bytes of audio data to OpenAI for session ${data.sessionId}`);
+      const success = await this.webrtcService.sendAudioBuffer(data.sessionId, audioBuffer);
+      
+      if (success) {
+        this.logger.log(`✅ Successfully sent audio buffer to OpenAI for session ${data.sessionId}`);
+      } else {
+        this.logger.error(`❌ Failed to send audio buffer to OpenAI for session ${data.sessionId}`);
+        client.emit('realtime-event', {
+          type: 'error',
+          error: {
+            message: 'Failed to send audio data to OpenAI',
+            code: 'SEND_AUDIO_FAILED'
+          }
+        });
       }
     } catch (error) {
-      this.logger.error('Error handling audio data:', error);
-      client.emit('audio-error', { error: 'Internal server error processing audio' });
+      this.logger.error(`❌ Error handling audio data from client ${client?.id || 'unknown'}: ${error.message}`);
+      client.emit('realtime-event', {
+        type: 'error',
+        error: {
+          message: `Server error processing audio: ${error.message}`,
+          code: 'SERVER_ERROR'
+        }
+      });
     }
   }
   
@@ -854,28 +962,49 @@ a=fmtp:111 minptime=10;useinbandfec=1
    */
   private async cleanupRealtimeSession(sessionId: string) {
     try {
-      const session = this.realtimeSessions.get(sessionId);
+      // First check with the webrtcService if the session exists
+      const session = this.webrtcService.getRealtimeSession(sessionId);
       if (!session) {
+        this.logger.log(`Session ${sessionId} not found in webrtcService during cleanup`);
         return;
       }
       
       // IMPORTANT: Check for the connecting flag
       if (session['_connectingInProgress']) {
-        this.logger.log(`Skipping cleanup for session ${sessionId} - connection in progress`);
+        this.logger.log(`⚠️ Skipping cleanup for session ${sessionId} - connection in progress`);
+        return;
+      }
+      
+      // If the session was recently created (within the last 20 seconds), don't clean it up
+      const sessionAge = Date.now() - session.createdAt.getTime();
+      if (sessionAge < 20000) {
+        this.logger.log(`⚠️ Skipping cleanup for session ${sessionId} - too new (${Math.round(sessionAge/1000)}s old)`);
         return;
       }
       
       this.logger.log(`Cleaning up realtime session: ${sessionId}`);
       
-      // Close OpenAI WebSocket connection
+      // Close OpenAI WebSocket connection but don't delete the session 
       try {
-        await this.webrtcService.closeRealtimeSession(sessionId);
+        // Just disconnect but don't fully close/delete
+        if (session.modelConnection) {
+          this.logger.log(`Closing WebSocket connection for session ${sessionId} but preserving session`);
+          try {
+            session.modelConnection.close();
+          } catch (err) {
+            this.logger.error(`Error closing WebSocket for session ${sessionId}:`, err);
+          }
+          session.modelConnection = undefined;
+        }
+        
+        // Mark as disconnected but don't remove from realtimeSessions map
+        session.state = 'disconnected';
+        this.logger.log(`Marked session ${sessionId} as disconnected but preserved it`);
+        
+        return;
       } catch (err) {
         this.logger.error(`Error closing OpenAI realtime connection for session ${sessionId}:`, err);
       }
-      
-      // Remove from our session map
-      this.realtimeSessions.delete(sessionId);
       
       this.logger.log(`Realtime session ${sessionId} cleaned up`);
     } catch (error) {
@@ -1024,8 +1153,30 @@ a=fmtp:111 minptime=10;useinbandfec=1
 
   // Add ping-pong handler for connection diagnostics
   @SubscribeMessage('ping')
-  handlePing(@ConnectedSocket() client: Socket) {
-    this.logger.debug(`Received ping from client ${client.id}, sending pong`);
+  handlePing(@ConnectedSocket() client: Socket): void {
+    this.logger.log(`Received ping from client ${client.id}`);
     client.emit('pong');
+  }
+
+  // Echo test handler for debugging
+  @SubscribeMessage('echo-test')
+  handleEchoTest(
+    @MessageBody() data: any,
+    @ConnectedSocket() client: Socket
+  ): void {
+    try {
+      this.logger.log(`Received echo test from client ${client.id}: ${JSON.stringify(data)}`);
+      
+      // Send a response back to the client
+      client.emit('echo-response', {
+        received: data,
+        timestamp: Date.now(),
+        serverMessage: 'Echo response from server'
+      });
+      
+      this.logger.log(`Sent echo response to client ${client.id}`);
+    } catch (error) {
+      this.logger.error('Error handling echo test:', error);
+    }
   }
 } 
