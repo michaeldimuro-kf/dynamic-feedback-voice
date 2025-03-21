@@ -34,6 +34,9 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
   const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   
+  // Add audio buffer state for collecting chunks
+  const audioBufferChunks = useRef<string[]>([]);
+  
   // Debug mode
   const debugMode = config.debugMode ?? (import.meta.env.VITE_DEBUG_WEBRTC === 'true') ?? true;
   
@@ -486,21 +489,55 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
           break;
           
         case 'response.audio.delta':
-          if (event.delta && event.delta.audio) {
-            const audioBase64 = event.delta.audio;
-            debugLog(`Audio delta received: ${audioBase64.substring(0, 20)}... (${audioBase64.length} chars)`);
+          if (event.delta) {
+            // OpenAI sends the audio data directly in the delta property, not in delta.audio
+            const audioBase64 = typeof event.delta === 'string' ? event.delta : null;
             
-            // Indicate that we're streaming audio
-            setIsStreaming(true);
+            if (audioBase64 && audioBase64.length > 0) {
+              debugLog(`Audio delta received: ${audioBase64.substring(0, 20)}... (${audioBase64.length} chars)`);
+              
+              // Add this chunk to our buffer instead of playing immediately
+              audioBufferChunks.current.push(audioBase64);
+              debugLog(`Added audio chunk #${audioBufferChunks.current.length} to buffer`);
+              
+              // Indicate that we're streaming audio
+              setIsStreaming(true);
+            } else {
+              // This is normal - OpenAI sometimes sends empty delta events or malformed data
+              debugLog('Received response.audio.delta event without valid audio data');
+            }
+          } else {
+            // This is normal - OpenAI sometimes sends empty audio delta events at the start/end
+            debugLog('Received response.audio.delta event without audio data');
+          }
+          break;
+          
+        case 'response.text.final':
+          debugLog('Final text received');
+          break;
+          
+        case 'response.audio.final':
+          debugLog('Final audio received');
+          break;
+          
+        // Handle "done" events for all response types
+        case 'response.audio.done':
+          debugLog('Audio processing complete');
+          
+          // Now play the complete audio by combining all chunks
+          if (audioBufferChunks.current.length > 0) {
+            debugLog(`Processing complete audio from ${audioBufferChunks.current.length} chunks`);
+            const completeAudioBase64 = audioBufferChunks.current.join('');
+            debugLog(`Complete audio length: ${completeAudioBase64.length} chars`);
             
-            // Play the audio
+            // Play the complete audio
             try {
-              debugLog('Attempting to play audio...');
+              debugLog('Processing complete audio buffer...');
               
               // For PCM16 format, we need to convert to a playable format
               // First, decode the base64 data
               debugLog('Decoding Base64 audio data...');
-              const binaryString = atob(audioBase64);
+              const binaryString = atob(completeAudioBase64);
               debugLog(`Decoded Base64 data successfully (length: ${binaryString.length} bytes)`);
               
               // Convert binary string to Int16Array (PCM16 format)
@@ -564,41 +601,35 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
               audio.onended = () => {
                 URL.revokeObjectURL(url);
                 debugLog('Audio playback ended, URL revoked');
+                // Reset the streaming flag after playback
+                setIsStreaming(false);
               };
               
               audio.onerror = (err) => {
                 debugLog(`Audio element error: ${audio.error?.code} - ${audio.error?.message}`);
+                setIsStreaming(false);
               };
               
               audio.play().then(() => {
                 debugLog('Audio playback started successfully');
               }).catch(err => {
                 debugLog(`Error playing audio: ${err.name} - ${err.message}`);
+                setIsStreaming(false);
               });
             } catch (err) {
               debugLog(`Error processing audio data: ${err instanceof Error ? err.message : String(err)}`);
               if (err instanceof Error && err.stack) {
                 debugLog(`Error stack: ${err.stack}`);
               }
+              setIsStreaming(false);
             }
+            
+            // Clear the buffer after playing
+            audioBufferChunks.current = [];
           } else {
-            // This is normal - OpenAI sometimes sends empty audio delta events at the start/end
-            debugLog('Received response.audio.delta event without audio data');
+            debugLog('No audio chunks to play');
+            setIsStreaming(false);
           }
-          break;
-          
-        case 'response.text.final':
-          debugLog('Final text received');
-          break;
-          
-        case 'response.audio.final':
-          debugLog('Final audio received');
-          break;
-          
-        // Handle "done" events for all response types
-        case 'response.audio.done':
-          debugLog('Audio processing complete');
-          // Don't reset processing yet as there may be more events
           break;
           
         case 'response.audio_transcript.done':
@@ -617,7 +648,14 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
           debugLog('Response fully complete');
           // This is the final event, we can safely reset processing
           setIsProcessing(false);
-          setIsStreaming(false);
+          
+          // Make sure we reset streaming if not already done
+          if (isStreaming) {
+            setIsStreaming(false);
+          }
+          
+          // Ensure buffer is cleared for next interaction
+          audioBufferChunks.current = [];
           break;
         
         case 'error':
@@ -630,7 +668,9 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
           
           // Always reset processing state on error
           setIsProcessing(false);
-          setIsStreaming(false);
+          
+          // Clear any buffered audio chunks on error
+          audioBufferChunks.current = [];
           
           // Special handling for session not found errors - prompt to create a new session
           if (errorCode === 'SESSION_NOT_FOUND') {
