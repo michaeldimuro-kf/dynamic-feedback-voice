@@ -124,8 +124,11 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
         
         // Send session creation request
         debugLog('📡 Emitting start-realtime-session event...');
-        socket.emit('start-realtime-session', { initialPrompt });
-        debugLog('📤 Sent session creation request');
+        socket.emit('start-realtime-session', { 
+          initialPrompt,
+          voice: config.voice 
+        });
+        debugLog(`📤 Sent session creation request with voice: ${config.voice || 'default'}`);
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -133,7 +136,7 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
       setError(`Failed to create session: ${errorMessage}`);
       throw error;
     }
-  }, [socket, socketReady, initialPrompt, debugLog, sessionId]);
+  }, [socket, socketReady, initialPrompt, debugLog, sessionId, config.voice]);
   
   // Connect to an existing session
   const connectSession = useCallback(async (sid: string | null = null) => {
@@ -201,9 +204,10 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
         debugLog(`📡 Emitting connect-realtime-session event for session ${targetSessionId}...`);
         socket.emit('connect-realtime-session', {
           sessionId: targetSessionId,
-          initialPrompt
+          initialPrompt,
+          voice: config.voice
         });
-        debugLog(`📤 Sent connection request for session ${targetSessionId}`);
+        debugLog(`📤 Sent connection request for session ${targetSessionId} with voice: ${config.voice || 'default'}`);
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -211,7 +215,7 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
       setError(`Failed to connect session: ${errorMessage}`);
       throw error;
     }
-  }, [socket, socketReady, sessionId, createSession, initialPrompt, debugLog]);
+  }, [socket, socketReady, sessionId, createSession, initialPrompt, debugLog, config.voice]);
   
   // Start a session (create and connect)
   const startSession = useCallback(async () => {
@@ -572,7 +576,7 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
               
               // Convert PCM data to WAV by adding a proper header
               debugLog('Creating WAV header...');
-              const wavHeader = createWavHeader(pcmData.byteLength, 16000, 1, 16);
+              const wavHeader = createWavHeader(pcmData.byteLength, 24000, 1, 16);
               debugLog(`Created WAV header (${wavHeader.length} bytes)`);
               
               // Combine header and PCM data

@@ -37,7 +37,7 @@ const AudioRecorder: React.FC = () => {
   } = useRealtimeVoiceChat({
     debugMode: true,
     initialPrompt: 'You are a helpful assistant that answers questions about documents. Keep your answers concise and friendly.',
-    voice: 'onxy' // OpenAI voice options: alloy, echo, fable, onyx, nova, shimmer
+    voice: 'echo' // OpenAI voice options: alloy, ash, ballad, coral, echo, sage, shimmer, verse
   });
   
   // Map connection state to UI state

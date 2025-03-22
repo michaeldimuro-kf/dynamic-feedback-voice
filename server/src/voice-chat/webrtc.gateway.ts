@@ -218,7 +218,7 @@ export class WebRTCGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('start-realtime-session')
   async handleStartRealtimeSession(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { sessionId?: string } = {}
+    @MessageBody() data: { sessionId?: string, initialPrompt?: string, voice?: string } = {}
   ): Promise<void> {
     try {
       this.logger.log(`🔷 Received start-realtime-session request from client ${client.id}`);
@@ -231,8 +231,10 @@ export class WebRTCGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.clientSessions.set(client.id, sessionId);
       this.logger.log(`🔷 Associated client ${client.id} with session ${sessionId}`);
       
-      // Create a new session
-      const session = await this.webrtcService.createRealtimeSession(sessionId);
+      // Create a new session with voice parameter if provided
+      const config = { voice: data.voice };
+      this.logger.log(`🔷 Creating session with config: ${JSON.stringify(config)}`);
+      const session = await this.webrtcService.createRealtimeSession(sessionId, config);
       if (!session) {
         this.logger.error(`❌ Failed to create realtime session ${sessionId} for client ${client.id}`);
         client.emit('realtime-session-started', { 
@@ -290,26 +292,30 @@ export class WebRTCGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('connect-realtime-session')
   async handleConnectRealtimeSession(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { sessionId: string, initialPrompt?: string }
+    @MessageBody() data: { sessionId: string, initialPrompt?: string, voice?: string }
   ): Promise<void> {
     try {
       const sessionId = data.sessionId || client.id;
       const initialPrompt = data.initialPrompt || '';
       
       this.logger.log(`Received connect-realtime-session request from client ${client.id}`);
-      this.logger.log(`For session ID: ${sessionId}, Initial prompt length: ${initialPrompt.length}`);
       
       // Check if session exists
       if (!this.webrtcService.hasRealtimeSession(sessionId)) {
-        this.logger.error(`Session ${sessionId} not found`);
-        client.emit('realtime-session-connected', { 
-          success: false, 
-          error: 'Session not found' 
-        });
-        this.logger.log(`Sent failure response to client ${client.id}`);
-        return;
+        this.logger.log(`Session ${sessionId} not found, creating a new one`);
+        
+        // Create a new session with the requested voice
+        const config = { voice: data.voice };
+        this.logger.log(`Creating session with config: ${JSON.stringify(config)}`);
+        await this.webrtcService.createRealtimeSession(sessionId, config);
+      } else {
+        // If the session exists but has a different voice config, update it
+        const session = this.webrtcService.getRealtimeSession(sessionId);
+        if (session && data.voice && session.config.voice !== data.voice) {
+          this.logger.log(`Updating session voice from ${session.config.voice} to ${data.voice}`);
+          session.config.voice = data.voice;
+        }
       }
-      this.logger.log(`Session ${sessionId} found, connecting to OpenAI...`);
       
       // Flag the session as connecting to prevent premature cleanup
       const session = this.webrtcService.getRealtimeSession(sessionId);
