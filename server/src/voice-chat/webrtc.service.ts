@@ -176,6 +176,10 @@ export class WebRTCService implements OnModuleDestroy {
     try {
       this.logger.log(`Creating realtime session with ID: ${sessionId}`);
       
+      // Check if VAD should be disabled
+      const hasVad = config.disableVad !== true;
+      this.logger.log(`Creating session with VAD ${hasVad ? 'enabled' : 'disabled'}`);
+      
       // Create the session with initial properties
       this.realtimeSessions.set(sessionId, {
         id: sessionId,
@@ -189,9 +193,9 @@ export class WebRTCService implements OnModuleDestroy {
           modalities: config.modalities || ["text", "audio"],
           inputFormat: "pcm16",
           outputFormat: "pcm16",
-          turn_detection: {
+          turn_detection: hasVad ? {
             type: "server_vad"
-          },
+          } : null,
           ...config
         },
         active: true,
@@ -312,9 +316,7 @@ export class WebRTCService implements OnModuleDestroy {
                 modalities: session.config.modalities,
                 input_audio_format: "pcm16",
                 output_audio_format: "pcm16",
-                turn_detection: {
-                  type: "server_vad"
-                }
+                turn_detection: session.config.turn_detection
               }
             };
             
@@ -795,5 +797,113 @@ export class WebRTCService implements OnModuleDestroy {
    */
   public getSessionIds(): string[] {
     return Array.from(this.realtimeSessions.keys());
+  }
+
+  /**
+   * Manually commit the audio buffer when VAD is disabled
+   * @param sessionId Client's session ID
+   */
+  async commitAudioBuffer(sessionId: string): Promise<boolean> {
+    try {
+      // Get the session
+      const session = this.realtimeSessions.get(sessionId);
+      if (!session) {
+        this.logger.error(`❌ Cannot commit audio buffer: Session ${sessionId} not found`);
+        return false;
+      }
+
+      // Check if connected
+      if (session.state !== 'connected' || !session.modelConnection) {
+        this.logger.error(`❌ Cannot commit audio buffer: Session ${sessionId} is not connected (state: ${session.state}, hasConnection: ${!!session.modelConnection})`);
+        return false;
+      }
+
+      // Update activity timestamp
+      session.lastActivity = new Date();
+      
+      this.logger.log(`🎤 Manually committing audio buffer for session ${sessionId} (VAD disabled)`);
+      
+      // Send the commit event to OpenAI
+      const event = {
+        type: 'input_audio_buffer.commit'
+      };
+      
+      return this.sendRealtimeEvent(sessionId, event);
+    } catch (error) {
+      this.logger.error(`❌ Error committing audio buffer for session ${sessionId}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Manually create a response when VAD is disabled
+   * @param sessionId Client's session ID
+   */
+  async createResponse(sessionId: string): Promise<boolean> {
+    try {
+      // Get the session
+      const session = this.realtimeSessions.get(sessionId);
+      if (!session) {
+        this.logger.error(`❌ Cannot create response: Session ${sessionId} not found`);
+        return false;
+      }
+
+      // Check if connected
+      if (session.state !== 'connected' || !session.modelConnection) {
+        this.logger.error(`❌ Cannot create response: Session ${sessionId} is not connected (state: ${session.state}, hasConnection: ${!!session.modelConnection})`);
+        return false;
+      }
+
+      // Update activity timestamp
+      session.lastActivity = new Date();
+      
+      this.logger.log(`🤖 Manually creating response for session ${sessionId} (VAD disabled)`);
+      
+      // Send the response.create event to OpenAI
+      const event = {
+        type: 'response.create'
+      };
+      
+      return this.sendRealtimeEvent(sessionId, event);
+    } catch (error) {
+      this.logger.error(`❌ Error creating response for session ${sessionId}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Clear the audio buffer before beginning a new input
+   * @param sessionId Client's session ID
+   */
+  async clearAudioBuffer(sessionId: string): Promise<boolean> {
+    try {
+      // Get the session
+      const session = this.realtimeSessions.get(sessionId);
+      if (!session) {
+        this.logger.error(`❌ Cannot clear audio buffer: Session ${sessionId} not found`);
+        return false;
+      }
+
+      // Check if connected
+      if (session.state !== 'connected' || !session.modelConnection) {
+        this.logger.error(`❌ Cannot clear audio buffer: Session ${sessionId} is not connected (state: ${session.state}, hasConnection: ${!!session.modelConnection})`);
+        return false;
+      }
+
+      // Update activity timestamp
+      session.lastActivity = new Date();
+      
+      this.logger.log(`🧹 Clearing audio buffer for session ${sessionId} (VAD disabled)`);
+      
+      // Send the clear event to OpenAI
+      const event = {
+        type: 'input_audio_buffer.clear'
+      };
+      
+      return this.sendRealtimeEvent(sessionId, event);
+    } catch (error) {
+      this.logger.error(`❌ Error clearing audio buffer for session ${sessionId}: ${error.message}`);
+      return false;
+    }
   }
 } 

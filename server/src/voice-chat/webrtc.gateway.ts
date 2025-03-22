@@ -1185,4 +1185,112 @@ a=fmtp:111 minptime=10;useinbandfec=1
       this.logger.error('Error handling echo test:', error);
     }
   }
+
+  /**
+   * Handle manual commit of audio buffer (when VAD is disabled)
+   */
+  @SubscribeMessage('commit-audio-buffer')
+  async handleCommitAudioBuffer(
+    @MessageBody() data: { sessionId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const { sessionId } = data;
+      
+      if (!sessionId) {
+        throw new Error('Session ID is required');
+      }
+      
+      this.logger.log(`Manually committing audio buffer for session ${sessionId}`);
+      
+      // Verify session exists
+      if (!this.webrtcService.hasRealtimeSession(sessionId)) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
+      
+      // Send commit command to OpenAI
+      await this.webrtcService.sendRealtimeEvent(sessionId, {
+        type: 'input_audio_buffer.commit'
+      });
+      
+      this.logger.log(`Successfully committed audio buffer for session ${sessionId}`);
+      
+      return { success: true };
+    } catch (error) {
+      this.logger.error(`Error committing audio buffer:`, error);
+      return { error: error.message };
+    }
+  }
+  
+  /**
+   * Handle manual creation of response (when VAD is disabled)
+   */
+  @SubscribeMessage('create-response')
+  async handleCreateResponse(
+    @MessageBody() data: { sessionId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const { sessionId } = data;
+      
+      if (!sessionId) {
+        throw new Error('Session ID is required');
+      }
+      
+      this.logger.log(`Manually creating response for session ${sessionId}`);
+      
+      // Verify session exists
+      if (!this.webrtcService.hasRealtimeSession(sessionId)) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
+      
+      // Send response.create command to OpenAI
+      await this.webrtcService.sendRealtimeEvent(sessionId, {
+        type: 'response.create'
+      });
+      
+      this.logger.log(`Successfully created response for session ${sessionId}`);
+      
+      return { success: true };
+    } catch (error) {
+      this.logger.error(`Error creating response:`, error);
+      return { error: error.message };
+    }
+  }
+  
+  /**
+   * Handle clearing of audio buffer (when VAD is disabled)
+   */
+  @SubscribeMessage('clear-audio-buffer')
+  async handleClearAudioBuffer(
+    @MessageBody() data: { sessionId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const { sessionId } = data;
+      
+      if (!sessionId) {
+        throw new Error('Session ID is required');
+      }
+      
+      this.logger.log(`Clearing audio buffer for session ${sessionId}`);
+      
+      // Verify session exists
+      if (!this.webrtcService.hasRealtimeSession(sessionId)) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
+      
+      // Send clear command to OpenAI
+      await this.webrtcService.sendRealtimeEvent(sessionId, {
+        type: 'input_audio_buffer.clear'
+      });
+      
+      this.logger.log(`Successfully cleared audio buffer for session ${sessionId}`);
+      
+      return { success: true };
+    } catch (error) {
+      this.logger.error(`Error clearing audio buffer:`, error);
+      return { error: error.message };
+    }
+  }
 } 

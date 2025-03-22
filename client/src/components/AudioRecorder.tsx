@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import MicrophonePermissionsModal from './MicrophonePermissionsModal';
 import useStore from '../store/useStore';
 import useRealtimeVoiceChat from '../hooks/useRealtimeVoiceChat';
+import useSocket from '../hooks/useSocket';
 import '../styles/AudioRecorder.css';
 
 /**
@@ -11,8 +12,12 @@ import '../styles/AudioRecorder.css';
  */
 const AudioRecorder: React.FC = () => {
   const {
-    setIsRecording
+    setIsRecording,
+    setIsProcessing
   } = useStore();
+  
+  // Get socket connection
+  const { socket } = useSocket();
   
   // State for the recorder UI
   const [permissionDenied, setPermissionDenied] = useState<boolean>(false);
@@ -33,11 +38,16 @@ const AudioRecorder: React.FC = () => {
     isProcessing,
     isStreaming,
     endSession,
-    runConnectionDiagnostics
+    runConnectionDiagnostics,
+    commitAudioBuffer,
+    createResponse,
+    clearAudioBuffer,
+    getCurrentSessionId
   } = useRealtimeVoiceChat({
     debugMode: true,
     initialPrompt: 'You are a helpful assistant that answers questions about documents. Keep your answers concise and friendly.',
-    voice: 'echo' // OpenAI voice options: alloy, ash, ballad, coral, echo, sage, shimmer, verse
+    voice: 'echo', // OpenAI voice options: alloy, ash, ballad, coral, echo, sage, shimmer, verse
+    disableVad: true // Disable Voice Activity Detection for manual control
   });
   
   // Map connection state to UI state
@@ -71,6 +81,15 @@ const AudioRecorder: React.FC = () => {
         console.log(`🔄 Session started: ${sessionId}`);
       }
       
+      // Since VAD is disabled, clear the audio buffer before starting a new recording
+      console.log("🧹 Clearing audio buffer...");
+      const cleared = await clearAudioBuffer();
+      if (!cleared) {
+        console.warn("⚠️ Failed to clear audio buffer, but continuing anyway");
+      } else {
+        console.log("✅ Audio buffer cleared successfully");
+      }
+      
       // Start the actual recording
       const success = await startRecording();
       if (success) {
@@ -85,17 +104,93 @@ const AudioRecorder: React.FC = () => {
       console.error("❌ Error starting recording:", err);
       setErrorMessage(err instanceof Error ? err.message : String(err));
     }
-  }, [sessionId, startSession, startRecording, isProcessing]);
+  }, [sessionId, startSession, startRecording, isProcessing, clearAudioBuffer]);
   
   // Stop recording function
-  const stopRecordingHandler = useCallback(() => {
+  const stopRecordingHandler = useCallback(async () => {
     if (!isRecordingRef.current) return;
     
     console.log("🛑 Stopping recording...");
-    stopRecording();
     isRecordingRef.current = false;
-    console.log("🛑 Recording stopped!");
-  }, [stopRecording]);
+    
+    try {
+      // Store the session ID before stopping the recording to ensure it's available
+      const currentSessionId = getCurrentSessionId();
+      if (!currentSessionId) {
+        console.error("❌ No session ID available, cannot stop recording properly");
+        setErrorMessage("Session ID not found. Please refresh and try again.");
+        return;
+      }
+      console.log(`🔑 Using session ID for operations: ${currentSessionId}`);
+      
+      // Check connection state before proceeding with manual control
+      if (connectionState !== 'connected') {
+        console.error("❌ Cannot commit audio buffer: Not connected to server");
+        setErrorMessage("Not connected to server. Please refresh and try again.");
+        return;
+      }
+      
+      await stopRecording();
+      console.log("✅ Recording stopped");
+      
+      setIsProcessing(true);
+
+      // Since VAD is disabled, we need to manually commit the audio buffer and create a response
+      console.log("🎤 Manually committing audio buffer...");
+      
+      // Manually emit the event directly if the commitAudioBuffer function fails
+      try {
+        const committed = await commitAudioBuffer();
+        if (!committed) {
+          console.warn("⚠️ Failed to commit audio buffer through the hook, trying direct method");
+          if (socket && socket.connected) {
+            console.log(`🔄 Directly emitting commit-audio-buffer with session ID: ${currentSessionId}`);
+            socket.emit('commit-audio-buffer', { sessionId: currentSessionId });
+            console.log("✅ Direct emission of commit-audio-buffer event successful");
+          } else {
+            throw new Error("Socket not connected");
+          }
+        } else {
+          console.log("✅ Audio buffer committed successfully");
+        }
+      } catch (commitError) {
+        console.error("❌ Error committing audio buffer:", commitError);
+        setErrorMessage(commitError instanceof Error ? commitError.message : String(commitError));
+        setIsProcessing(false);
+        return;
+      }
+      
+      // Create a response once the audio buffer is committed
+      console.log("🤖 Manually creating response...");
+      try {
+        const responseCreated = await createResponse();
+        if (!responseCreated) {
+          console.warn("⚠️ Failed to create response through the hook, trying direct method");
+          if (socket && socket.connected) {
+            console.log(`🔄 Directly emitting create-response with session ID: ${currentSessionId}`);
+            socket.emit('create-response', { sessionId: currentSessionId });
+            console.log("✅ Direct emission of create-response event successful");
+          } else {
+            throw new Error("Socket not connected");
+          }
+        } else {
+          console.log("✅ Response creation initiated successfully");
+        }
+      } catch (responseError) {
+        console.error("❌ Error creating response:", responseError);
+        setErrorMessage(responseError instanceof Error ? responseError.message : String(responseError));
+        setIsProcessing(false);
+        return;
+      }
+      
+      // Processing will be set to false when the response is done
+      // This happens in the event handlers inside useRealtimeVoiceChat
+    } catch (err) {
+      console.error("❌ Error stopping recording:", err);
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+      setIsProcessing(false);
+    }
+  }, [stopRecording, setIsProcessing, commitAudioBuffer, createResponse, connectionState, socket, getCurrentSessionId]);
   
   // Handle press and hold for recording
   const handleRecordButtonDown = () => {

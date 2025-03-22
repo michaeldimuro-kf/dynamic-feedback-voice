@@ -6,6 +6,7 @@ interface VoiceChatOptions {
   initialPrompt?: string;
   voice?: string;
   debugMode?: boolean;
+  disableVad?: boolean;
 }
 
 /**
@@ -36,6 +37,16 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
   
   // Add audio buffer state for collecting chunks
   const audioBufferChunks = useRef<string[]>([]);
+  
+  // Keep track of the session ID even if state gets cleared
+  const sessionIdRef = useRef<string | null>(null);
+  
+  // Update the ref whenever the state changes
+  useEffect(() => {
+    if (sessionId) {
+      sessionIdRef.current = sessionId;
+    }
+  }, [sessionId]);
   
   // Debug mode
   const debugMode = config.debugMode ?? (import.meta.env.VITE_DEBUG_WEBRTC === 'true') ?? true;
@@ -126,9 +137,10 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
         debugLog('📡 Emitting start-realtime-session event...');
         socket.emit('start-realtime-session', { 
           initialPrompt,
-          voice: config.voice 
+          voice: config.voice,
+          disableVad: config.disableVad
         });
-        debugLog(`📤 Sent session creation request with voice: ${config.voice || 'default'}`);
+        debugLog(`📤 Sent session creation request with voice: ${config.voice || 'default'}, VAD ${config.disableVad ? 'disabled' : 'enabled'}`);
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -136,7 +148,7 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
       setError(`Failed to create session: ${errorMessage}`);
       throw error;
     }
-  }, [socket, socketReady, initialPrompt, debugLog, sessionId, config.voice]);
+  }, [socket, socketReady, initialPrompt, debugLog, sessionId, config.voice, config.disableVad]);
   
   // Connect to an existing session
   const connectSession = useCallback(async (sid: string | null = null) => {
@@ -205,9 +217,10 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
         socket.emit('connect-realtime-session', {
           sessionId: targetSessionId,
           initialPrompt,
-          voice: config.voice
+          voice: config.voice,
+          disableVad: config.disableVad
         });
-        debugLog(`📤 Sent connection request for session ${targetSessionId} with voice: ${config.voice || 'default'}`);
+        debugLog(`📤 Sent connection request for session ${targetSessionId} with voice: ${config.voice || 'default'}, VAD ${config.disableVad ? 'disabled' : 'enabled'}`);
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -370,6 +383,12 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
   const stopRecording = useCallback(() => {
     debugLog('Stopping recording');
     
+    // Ensure we save the current session ID before cleanup
+    if (sessionId && !sessionIdRef.current) {
+      debugLog(`Preserving session ID ${sessionId} in ref`);
+      sessionIdRef.current = sessionId;
+    }
+    
     // Disconnect and cleanup audio processing nodes
     if (audioProcessorRef.current) {
       try {
@@ -412,7 +431,7 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
     // Update state
     setIsRecording(false);
     debugLog('Recording stopped');
-  }, [debugLog, setIsRecording]);
+  }, [debugLog, setIsRecording, sessionId]);
   
   // End the session
   const endSession = useCallback(async () => {
@@ -442,6 +461,135 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
       return false;
     }
   }, [socket, socketReady, sessionId, stopRecording, debugLog]);
+  
+  // Manually commit the audio buffer when VAD is disabled
+  const commitAudioBuffer = useCallback(async () => {
+    try {
+      debugLog('Manually committing audio buffer');
+      
+      // Enhanced connection check
+      if (!socket) {
+        debugLog('Socket not available, cannot commit audio buffer');
+        throw new Error('Socket not connected or session not established');
+      }
+      
+      if (!socket.connected) {
+        debugLog('Socket disconnected, attempting to reconnect...');
+        try {
+          socket.connect();
+          // Wait for connection
+          await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              reject(new Error('Socket reconnection timeout'));
+            }, 5000);
+            
+            const connectHandler = () => {
+              clearTimeout(timeout);
+              resolve(true);
+            };
+            
+            socket.once('connect', connectHandler);
+          });
+          debugLog('Socket reconnected successfully');
+        } catch (reconnectError) {
+          debugLog(`Socket reconnection failed: ${reconnectError instanceof Error ? reconnectError.message : String(reconnectError)}`);
+          throw new Error('Failed to reconnect to server');
+        }
+      }
+      
+      // Try to use the stateful sessionId first, then fall back to the ref if needed
+      const currentSessionId = sessionId || sessionIdRef.current;
+      
+      if (!currentSessionId) {
+        debugLog('No active session ID, cannot commit audio buffer');
+        throw new Error('No active session ID');
+      }
+      
+      debugLog(`Using session ID for commit: ${currentSessionId}`);
+      socket.emit('commit-audio-buffer', { sessionId: currentSessionId });
+      debugLog('Sent commit-audio-buffer request');
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      debugLog(`Error committing audio buffer: ${errorMessage}`);
+      setError(`Failed to commit audio buffer: ${errorMessage}`);
+      return false;
+    }
+  }, [socket, sessionId, debugLog]);
+  
+  // Manually create a response when VAD is disabled
+  const createResponse = useCallback(async () => {
+    try {
+      debugLog('Manually creating response');
+      
+      // Enhanced connection check
+      if (!socket) {
+        debugLog('Socket not available, cannot create response');
+        throw new Error('Socket not connected or session not established');
+      }
+      
+      if (!socket.connected) {
+        debugLog('Socket disconnected, cannot create response');
+        throw new Error('Socket disconnected');
+      }
+      
+      // Try to use the stateful sessionId first, then fall back to the ref if needed
+      const currentSessionId = sessionId || sessionIdRef.current;
+      
+      if (!currentSessionId) {
+        debugLog('No active session ID, cannot create response');
+        throw new Error('No active session ID');
+      }
+      
+      debugLog(`Using session ID for response: ${currentSessionId}`);
+      setIsProcessing(true);
+      socket.emit('create-response', { sessionId: currentSessionId });
+      debugLog('Sent create-response request');
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      debugLog(`Error creating response: ${errorMessage}`);
+      setError(`Failed to create response: ${errorMessage}`);
+      setIsProcessing(false);
+      return false;
+    }
+  }, [socket, sessionId, debugLog, setIsProcessing]);
+  
+  // Clear the audio buffer before beginning a new input
+  const clearAudioBuffer = useCallback(async () => {
+    try {
+      debugLog('Clearing audio buffer');
+      
+      // Enhanced connection check
+      if (!socket) {
+        debugLog('Socket not available, cannot clear audio buffer');
+        throw new Error('Socket not connected or session not established');
+      }
+      
+      if (!socket.connected) {
+        debugLog('Socket disconnected, cannot clear audio buffer');
+        throw new Error('Socket disconnected');
+      }
+      
+      // Try to use the stateful sessionId first, then fall back to the ref if needed
+      const currentSessionId = sessionId || sessionIdRef.current;
+      
+      if (!currentSessionId) {
+        debugLog('No active session ID, cannot clear audio buffer');
+        throw new Error('No active session ID');
+      }
+      
+      debugLog(`Using session ID for clearing: ${currentSessionId}`);
+      socket.emit('clear-audio-buffer', { sessionId: currentSessionId });
+      debugLog('Sent clear-audio-buffer request');
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      debugLog(`Error clearing audio buffer: ${errorMessage}`);
+      setError(`Failed to clear audio buffer: ${errorMessage}`);
+      return false;
+    }
+  }, [socket, sessionId, debugLog]);
   
   // Handle realtime events from the server
   useEffect(() => {
@@ -952,6 +1100,9 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
     connectionState,
     error,
     
+    // Get the current session ID (either from state or ref)
+    getCurrentSessionId: () => sessionId || sessionIdRef.current,
+    
     // Actions
     createSession,
     startSession,
@@ -959,11 +1110,17 @@ const useRealtimeVoiceChat = (options: VoiceChatOptions | string = {}) => {
     startRecording,
     stopRecording,
     endSession,
+    commitAudioBuffer,
+    createResponse,
+    clearAudioBuffer,
     
     // Audio state
     isRecording: useStore.getState().audioState.isRecording,
     isProcessing: useStore.getState().audioState.isProcessing,
     isStreaming,
+    
+    // Socket state for direct access
+    socket,
     
     // Diagnostic helper
     runConnectionDiagnostics: async () => {
