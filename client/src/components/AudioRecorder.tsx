@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { MdMic, MdStop, MdSettings } from 'react-icons/md';
-import { AnimatePresence, motion } from 'framer-motion';
+import { MdMic, MdStop } from 'react-icons/md';
+import { motion } from 'framer-motion';
 import MicrophonePermissionsModal from './MicrophonePermissionsModal';
 import useStore from '../store/useStore';
 import useRealtimeVoiceChat from '../hooks/useRealtimeVoiceChat';
@@ -15,11 +15,10 @@ const AudioRecorder: React.FC = () => {
   } = useStore();
   
   // State for the recorder UI
-  const [showRecorder, setShowRecorder] = useState<boolean>(false);
   const [permissionDenied, setPermissionDenied] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   
-  // Reference to track if we're currently recording
+  // Reference to track if we're currently recording (regardless of hook state)
   const isRecordingRef = useRef<boolean>(false);
   
   // Use our custom hook for realtime voice chat
@@ -38,11 +37,18 @@ const AudioRecorder: React.FC = () => {
   } = useRealtimeVoiceChat({
     debugMode: true,
     initialPrompt: 'You are a helpful assistant that answers questions about documents. Keep your answers concise and friendly.',
-    voice: 'alloy' // OpenAI voice options: alloy, echo, fable, onyx, nova, shimmer
+    voice: 'onxy' // OpenAI voice options: alloy, echo, fable, onyx, nova, shimmer
   });
   
   // Map connection state to UI state
   const voiceChatConnected = connectionState === 'connected';
+
+  // Sync hook's recording state to our ref
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+    // Update the global store state
+    setIsRecording(isRecording);
+  }, [isRecording, setIsRecording]);
 
   // Handle errors from the voice chat hook
   useEffect(() => {
@@ -52,54 +58,78 @@ const AudioRecorder: React.FC = () => {
     }
   }, [voiceChatError]);
   
-  // Toggle recorder visibility
-  const toggleRecorder = () => {
-    setShowRecorder(!showRecorder);
+  // Start recording function
+  const startRecordingHandler = useCallback(async () => {
+    if (isRecordingRef.current || isProcessing) return;
     
-    // Run diagnostics when opening the recorder
-    if (!showRecorder) {
-      console.log("Running connection diagnostics...");
-      runConnectionDiagnostics().then(results => {
-        console.log("Connection diagnostics results:", results);
-      });
+    console.log("🎙️ Starting recording...");
+    try {
+      // Ensure we have a session first
+      if (!sessionId) {
+        console.log("🔄 No session, starting one...");
+        await startSession();
+        console.log(`🔄 Session started: ${sessionId}`);
+      }
+      
+      // Start the actual recording
+      const success = await startRecording();
+      if (success) {
+        isRecordingRef.current = true;
+        console.log("✅ Recording started successfully! Speak now...");
+        console.log("📊 Audio data should now be visible in server logs");
+      } else {
+        console.error("❌ Failed to start recording");
+        setErrorMessage("Failed to start recording");
+      }
+    } catch (err) {
+      console.error("❌ Error starting recording:", err);
+      setErrorMessage(err instanceof Error ? err.message : String(err));
     }
+  }, [sessionId, startSession, startRecording, isProcessing]);
+  
+  // Stop recording function
+  const stopRecordingHandler = useCallback(() => {
+    if (!isRecordingRef.current) return;
+    
+    console.log("🛑 Stopping recording...");
+    stopRecording();
+    isRecordingRef.current = false;
+    console.log("🛑 Recording stopped!");
+  }, [stopRecording]);
+  
+  // Handle press and hold for recording
+  const handleRecordButtonDown = () => {
+    startRecordingHandler();
   };
   
-  // Handle button click to start/stop recording
-  const handleRecordButtonClick = useCallback(async () => {
-    if (isRecordingRef.current) {
-      // If already recording, stop it
-      console.log("🛑 Stopping recording...");
-      stopRecording();
-      isRecordingRef.current = false;
-      console.log("🛑 Recording stopped!");
-    } else {
-      // If not recording, start it
-      console.log("🎙️ Starting recording...");
-      try {
-        // Ensure we have a session first
-        if (!sessionId) {
-          console.log("🔄 No session, starting one...");
-          await startSession();
-          console.log(`🔄 Session started: ${sessionId}`);
-        }
-        
-        // Start the actual recording
-        const success = await startRecording();
-        if (success) {
-          isRecordingRef.current = true;
-          console.log("✅ Recording started successfully! Speak now...");
-          console.log("📊 Audio data should now be visible in server logs");
-        } else {
-          console.error("❌ Failed to start recording");
-          setErrorMessage("Failed to start recording");
-        }
-      } catch (err) {
-        console.error("❌ Error starting recording:", err);
-        setErrorMessage(err instanceof Error ? err.message : String(err));
+  const handleRecordButtonUp = () => {
+    stopRecordingHandler();
+  };
+  
+  // Handle spacebar key events
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat && !isRecordingRef.current && !isProcessing) {
+        e.preventDefault();
+        startRecordingHandler();
       }
-    }
-  }, [sessionId, startSession, startRecording, stopRecording, runConnectionDiagnostics]);
+    };
+    
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && isRecordingRef.current) {
+        e.preventDefault();
+        stopRecordingHandler();
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [isProcessing, startRecordingHandler, stopRecordingHandler]);
   
   // Clean up when component unmounts
   useEffect(() => {
@@ -112,11 +142,6 @@ const AudioRecorder: React.FC = () => {
   }, [stopRecording, endSession]);
   
   // Recorder button animations
-  const recorderVariants = {
-    hidden: { opacity: 0, scale: 0.8 },
-    visible: { opacity: 1, scale: 1, transition: { type: "spring", duration: 0.5 } }
-  };
-  
   const buttonVariants = {
     idle: { 
       scale: 1, 
@@ -144,7 +169,7 @@ const AudioRecorder: React.FC = () => {
   // Get the current button state based on recording status
   const getButtonState = () => {
     if (isProcessing) return "processing";
-    if (isRecording) return "recording";
+    if (isRecordingRef.current) return "recording";
     return "idle";
   };
   
@@ -155,53 +180,40 @@ const AudioRecorder: React.FC = () => {
   
   return (
     <>
-      <div className="audio-recorder-wrapper">
-        <AnimatePresence>
-          {showRecorder && (
-            <motion.div 
-              className="recorder-controls"
-              variants={recorderVariants}
-              initial="hidden"
-              animate="visible"
-              exit="hidden"
-            >
-              <motion.button
-                className="record-button"
-                onClick={handleRecordButtonClick}
-                variants={buttonVariants}
-                animate={getButtonState()}
-                disabled={isProcessing && !isRecording}
-              >
-                <motion.div
-                  variants={micIconVariants}
-                  animate={getButtonState()}
-                >
-                  {isRecording ? <MdStop size={24} /> : <MdMic size={24} />}
-                </motion.div>
-              </motion.button>
-              
-              {errorMessage && (
-                <div className="error-message">
-                  {errorMessage}
-                </div>
-              )}
-              
-              {isProcessing && !isRecording && (
-                <div className="processing-indicator">
-                  Processing...
-                </div>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-        
-        <button 
-          className={`toggle-recorder-button ${showRecorder ? 'active' : ''}`}
-          onClick={toggleRecorder}
-          aria-label="Toggle audio recorder"
+      <div className="record-button-container">
+        <div className="spacebar-hint">
+          Hold <kbd>Space</kbd> to record
+        </div>
+        <motion.button
+          className="main-record-button"
+          onMouseDown={handleRecordButtonDown}
+          onMouseUp={handleRecordButtonUp}
+          onMouseLeave={handleRecordButtonUp}
+          onTouchStart={handleRecordButtonDown}
+          onTouchEnd={handleRecordButtonUp}
+          variants={buttonVariants}
+          animate={getButtonState()}
+          disabled={isProcessing && !isRecordingRef.current}
         >
-          {showRecorder ? <MdSettings size={20} /> : <MdMic size={20} />}
-        </button>
+          <motion.div
+            variants={micIconVariants}
+            animate={getButtonState()}
+          >
+            {isRecordingRef.current ? <MdStop size={24} /> : <MdMic size={24} />}
+          </motion.div>
+        </motion.button>
+        
+        {errorMessage && (
+          <div className="error-message">
+            {errorMessage}
+          </div>
+        )}
+        
+        {isProcessing && !isRecordingRef.current && (
+          <div className="processing-indicator">
+            Processing...
+          </div>
+        )}
       </div>
       
       {permissionDenied && (

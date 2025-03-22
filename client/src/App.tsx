@@ -24,13 +24,14 @@ function App() {
         <PDFViewer />
         <div className="chat-section">
           <Chat />
-          <AudioRecorder />
           
           {!isConnected && (
             <div className="connection-status">
               <p>Connecting to server...</p>
             </div>
           )}
+          
+          <AudioRecorder />
         </div>
       </main>
       

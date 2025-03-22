@@ -7,54 +7,22 @@
   --text-color: #374151;
 }
 
-.audio-recorder-wrapper {
-  position: fixed;
-  bottom: 20px;
-  right: 20px;
+/* Styles for the main record button container */
+.record-button-container {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  z-index: 100;
-}
-
-.toggle-recorder-button {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background-color: var(--accent-color);
-  color: white;
-  display: flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  cursor: pointer;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  transition: all 0.2s ease;
-}
-
-.toggle-recorder-button:hover {
-  background-color: var(--accent-hover-color);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 8px rgba(0, 0, 0, 0.15);
-}
-
-.toggle-recorder-button.active {
-  background-color: var(--text-color);
-}
-
-.recorder-controls {
-  background-color: var(--background-color);
-  border-radius: 16px;
   padding: 16px;
-  margin-bottom: 12px;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 200px;
+  margin-top: 8px;
+  margin-bottom: 16px;
+  width: 100%;
+  background-color: rgba(255, 255, 255, 0.8);
+  border-radius: 12px;
 }
 
-.record-button {
+/* Styles for the main record button */
+.main-record-button {
   width: 64px;
   height: 64px;
   border-radius: 50%;
@@ -66,11 +34,43 @@
   margin-bottom: 12px;
   color: white;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
 }
 
-.record-button:disabled {
+.main-record-button:hover:not(:disabled) {
+  transform: scale(1.05);
+  box-shadow: 0 6px 8px rgba(0, 0, 0, 0.15);
+}
+
+.main-record-button:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.main-record-button:disabled {
   opacity: 0.7;
   cursor: not-allowed;
+}
+
+/* Keyboard shortcut hint */
+.spacebar-hint {
+  font-size: 0.875rem;
+  color: var(--text-color);
+  opacity: 0.7;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.spacebar-hint kbd {
+  background-color: #f1f1f1;
+  border: 1px solid #d1d1d1;
+  border-radius: 3px;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.2);
+  color: #333;
+  display: inline-block;
+  font-family: monospace;
+  font-size: 0.8em;
+  line-height: 1;
+  padding: 2px 4px;
 }
 
 .error-message {
@@ -78,6 +78,7 @@
   font-size: 0.875rem;
   margin-top: 8px;
   text-align: center;
+  max-width: 280px;
 }
 
 .processing-indicator {
